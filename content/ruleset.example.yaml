@@ -1,0 +1,8 @@
+name: starter_skirmish
+version: 1
+players:
+  max_players: 2
+economy:
+  starting_common_materials: 1000
+  starting_volatiles: 250
+  starting_rare_materials: 100

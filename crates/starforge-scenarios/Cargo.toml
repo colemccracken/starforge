@@ -1,0 +1,10 @@
+[package]
+name = "starforge-scenarios"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+starforge-content = { path = "../starforge-content" }
+starforge-core = { path = "../starforge-core" }

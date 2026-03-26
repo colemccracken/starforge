@@ -1,0 +1,6 @@
+name: two_player_skirmish
+ruleset: starter_skirmish
+seed: 42
+players:
+  - id: 1
+  - id: 2
