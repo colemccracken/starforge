@@ -1,5 +1,5 @@
-# Content Placeholders
+# Content Definitions
 
-This directory will hold the canonical YAML rulesets and balance data for Starforge.
+This directory holds the canonical YAML rulesets and balance data for Starforge.
 
-The initial bootstrap keeps only placeholders here. Real content should remain minimal until the deterministic simulation foundation is in place.
+The current `ruleset.example.yaml` file is the default ruleset loaded by `starforge-scenarios` for deterministic integration work.

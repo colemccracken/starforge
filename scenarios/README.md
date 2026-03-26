@@ -1,5 +1,5 @@
-# Scenario Placeholders
+# Scenario Definitions
 
-This directory will hold scenario definitions that bind a ruleset, seed, and player setup into a runnable session.
+This directory holds scenario definitions that bind a ruleset, seed, and player setup into a runnable session.
 
-The initial bootstrap provides a single placeholder file to anchor future schema work.
+The current `two_player_skirmish.example.yaml` file is loaded by `starforge-scenarios` as the default deterministic integration scenario.
