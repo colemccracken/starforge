@@ -15,18 +15,20 @@ pub use replay::ReplayLog;
 pub use session::GameSession;
 pub use snapshot::Snapshot;
 pub use state::{
-    AgentAssignment, BuildCapacity, CommandCollapseState, EnergyPotential, GameState, LocationKind,
+    AgentAssignment, BuildCapacity, CommandCollapseState, EnergyPotential, GameState,
+    HostileRemnantKind, HostileRemnantSeed, InfrastructureKind, InfrastructureSeed, LocationKind,
     LocationState, PlayerState, RelayStatus, ResourceRichness, StrategicPosition, TerritoryState,
-    ThroughputBudget, TrainingRunState, TransitState, VictoryState, VisibilityState,
+    ThreatLevel, ThroughputBudget, TrainingRunState, TransitState, VictoryState, VisibilityState,
 };
 
 #[cfg(test)]
 mod tests {
     use crate::{
         BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, GameConfig,
-        GameSession, LocationConnection, LocationKind, MatchSeed, PlayerId, RelayStatus,
+        GameSession, HostileRemnantKind, HostileRemnantSeed, InfrastructureKind,
+        InfrastructureSeed, LocationConnection, LocationKind, MatchSeed, PlayerId, RelayStatus,
         ResourceRichness, ScenarioConfig, SessionId, StartingLocation, StrategicPosition,
-        TerritoryState, TickId,
+        TerritoryState, ThreatLevel, TickId,
     };
 
     #[test]
@@ -61,7 +63,13 @@ mod tests {
                         relay_status: RelayStatus::Connected,
                         orbital_slots: 3,
                         has_environmental_hazard: false,
-                        hostile_remnant_present: false,
+                        starting_infrastructure: vec![InfrastructureSeed {
+                            kind: InfrastructureKind::CommandNexus,
+                            tier: 1,
+                            starts_online: true,
+                            starts_damaged: false,
+                        }],
+                        hostile_remnant: None,
                     },
                     StartingLocation {
                         location_id: 2,
@@ -77,7 +85,13 @@ mod tests {
                         relay_status: RelayStatus::Connected,
                         orbital_slots: 3,
                         has_environmental_hazard: false,
-                        hostile_remnant_present: false,
+                        starting_infrastructure: vec![InfrastructureSeed {
+                            kind: InfrastructureKind::CommandNexus,
+                            tier: 1,
+                            starts_online: true,
+                            starts_damaged: false,
+                        }],
+                        hostile_remnant: None,
                     },
                 ],
                 connections: vec![LocationConnection {
@@ -95,6 +109,10 @@ mod tests {
         assert_eq!(
             session.state().locations[0].resource_richness,
             ResourceRichness::Rich
+        );
+        assert_eq!(
+            session.state().locations[0].starting_infrastructure[0].kind,
+            InfrastructureKind::CommandNexus
         );
         assert_eq!(
             session.state().locations[0].homeworld_of,
@@ -646,6 +664,46 @@ mod tests {
                 relay_status: RelayStatus::Disconnected,
             }
         )));
+    }
+
+    #[test]
+    fn scenario_locations_can_carry_hostile_remnant_seed_data() {
+        let session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig {
+                starting_locations: vec![StartingLocation {
+                    location_id: 9,
+                    name: "Ruin World".to_owned(),
+                    kind: LocationKind::BarrenWorld,
+                    resource_richness: ResourceRichness::Moderate,
+                    energy_potential: EnergyPotential::Low,
+                    build_capacity: BuildCapacity::Constrained,
+                    strategic_position: StrategicPosition::Peripheral,
+                    territory: TerritoryState::Neutral,
+                    controller: None,
+                    homeworld_of: None,
+                    relay_status: RelayStatus::Disconnected,
+                    orbital_slots: 1,
+                    has_environmental_hazard: true,
+                    starting_infrastructure: Vec::new(),
+                    hostile_remnant: Some(HostileRemnantSeed {
+                        kind: HostileRemnantKind::DormantMilitaryRuin,
+                        threat_level: ThreatLevel::Medium,
+                        holds_orbital_defenses: true,
+                        holds_surface_defenses: true,
+                    }),
+                }],
+                ..ScenarioConfig::test_fixture()
+            },
+        );
+
+        let remnant = session.state().locations[0]
+            .hostile_remnant
+            .as_ref()
+            .expect("remnant should be present");
+        assert_eq!(remnant.kind, HostileRemnantKind::DormantMilitaryRuin);
+        assert_eq!(remnant.threat_level, ThreatLevel::Medium);
     }
 
     #[test]

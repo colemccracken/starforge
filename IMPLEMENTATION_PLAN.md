@@ -1,17 +1,17 @@
 # Starforge Implementation Plan
 
-Status: Active plan; Milestones 1-2 complete, Milestone 3 in progress  
+Status: Active plan; Milestones 1-3 complete, Milestone 4 in progress  
 Last Updated: 2026-03-25  
 Source of Truth: [STARFORGE_REFERENCE.md](STARFORGE_REFERENCE.md)  
-Current Milestone: World and content pipeline  
-Current Focus: Build on the generated world topology by adding richer starting-site and hostile-remnant seed data to the content pipeline.
+Current Milestone: Economy and infrastructure  
+Current Focus: Use the generated homeworld and world seed data to implement the first real economic simulation slice: starting infrastructure, throughput computation, relay penalties, and early infrastructure state transitions.
 
 ## Current Execution State
 
-- Current milestone: World and content pipeline
-- Current next action: Add explicit homeworld infrastructure seed packages and richer hostile-remnant descriptors so generated scenarios carry more actionable starting-state detail into later economy and military milestones.
+- Current milestone: Economy and infrastructure
+- Current next action: Introduce infrastructure state and economy initialization in `starforge-core`, seeded from starting-location infrastructure packages, then implement a first pass of energy, datacenter, and throughput computation.
 - Blockers: None currently identified.
-- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then completed the simulation-foundation milestone by implementing deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore and replay reconstruction support, added in-memory plus JSON snapshot round-trip tests, replaced the placeholder command path with deterministic throughput and agent-assignment mutations, added seeded RNG state with persistence and regression coverage in `starforge-core`, introduced structured command and domain event payloads, added deterministic location and relay mutations, added a save/load continuation equivalence regression, replaced placeholder YAML parsing in `starforge-content` with typed ruleset and scenario documents, generated deterministic homeworld and neutral starting locations from content data, wired `GameSession` bootstrap to honor generated starting locations from `ScenarioConfig`, added file-backed scenario harness loading plus session instantiation in `starforge-scenarios`, added typed planetary attributes to generated worlds, generated deterministic location connections so scenarios now carry a basic solar-system topology into session state, and remediated the old placeholder bootstrapping drift by routing API startup through the canonical compiled scenario path and renaming the default core scenario shape into an explicit test fixture.
+- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then completed the simulation-foundation milestone by implementing deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore and replay reconstruction support, added in-memory plus JSON snapshot round-trip tests, replaced the placeholder command path with deterministic throughput and agent-assignment mutations, added seeded RNG state with persistence and regression coverage in `starforge-core`, introduced structured command and domain event payloads, added deterministic location and relay mutations, added a save/load continuation equivalence regression, completed the world-and-content milestone by replacing placeholder YAML parsing in `starforge-content` with typed ruleset and scenario documents, generating deterministic homeworld and neutral starting locations from content data, wiring `GameSession` bootstrap to honor generated starting locations from `ScenarioConfig`, adding file-backed scenario harness loading plus session instantiation in `starforge-scenarios`, adding typed planetary attributes and deterministic location connections so scenarios carry a basic solar-system topology into session state, remediating the old placeholder bootstrapping drift by routing API startup through the canonical compiled scenario path and renaming the default core scenario shape into an explicit test fixture, and adding typed homeworld infrastructure packages plus structured hostile-remnant seed data to generated worlds.
 
 ## Purpose
 
@@ -151,8 +151,8 @@ Starforge will be implemented as a Rust workspace with strict ownership boundari
 | --- | --- | --- | --- | --- |
 | Workspace bootstrap | Complete | Create the executable Rust workspace skeleton and baseline developer tooling | Workspace builds, tests run, and crate boundaries compile cleanly | None |
 | Simulation foundation | Complete | Establish deterministic ticking, session lifecycle, save/load, and replay | Same seed and command log yield identical state hash and event stream | Workspace bootstrap |
-| World and content pipeline | In Progress | Load content and generate playable seeded solar systems | Seeded sessions produce valid playable systems with homeworlds and hostile remnants | Workspace bootstrap, Simulation foundation interfaces stable |
-| Economy and infrastructure | Not Started | Implement extraction, energy, datacenters, maintenance, relays, and throughput | Disconnected worlds and power deficits behave per design | Simulation foundation, World and content pipeline |
+| World and content pipeline | Complete | Load content and generate playable seeded solar systems | Seeded sessions produce valid playable systems with homeworlds and hostile remnants | Workspace bootstrap, Simulation foundation interfaces stable |
+| Economy and infrastructure | In Progress | Implement extraction, energy, datacenters, maintenance, relays, and throughput | Disconnected worlds and power deficits behave per design | Simulation foundation, World and content pipeline |
 | Movement, intel, and control | Not Started | Implement transit, survey, fog of war, and player-scoped projections | API visibility differs correctly by player and observation state | Simulation foundation, World and content pipeline, Economy and infrastructure |
 | Military and victory | Not Started | Implement combat, conquest, destruction, collapse, and ascension interruption | Scripted matches end by conquest or ascension with no draws | Economy and infrastructure, Movement, intel, and control |
 | Progression and agents | Not Started | Implement research, training, model tiers, and non-LLM agent orchestration | Progression and automation pressure the economy correctly | Economy and infrastructure, Movement, intel, and control, Military and victory state contracts |

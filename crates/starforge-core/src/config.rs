@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::MatchSeed;
 use crate::{
-    BuildCapacity, EnergyPotential, LocationKind, PlayerId, RelayStatus, ResourceRichness,
-    StrategicPosition, TerritoryState,
+    BuildCapacity, EnergyPotential, HostileRemnantSeed, InfrastructureSeed, LocationKind, PlayerId,
+    RelayStatus, ResourceRichness, StrategicPosition, TerritoryState,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +45,8 @@ pub struct StartingLocation {
     pub relay_status: RelayStatus,
     pub orbital_slots: u8,
     pub has_environmental_hazard: bool,
-    pub hostile_remnant_present: bool,
+    pub starting_infrastructure: Vec<InfrastructureSeed>,
+    pub hostile_remnant: Option<HostileRemnantSeed>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

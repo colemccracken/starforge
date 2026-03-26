@@ -88,7 +88,7 @@ mod tests {
         starter_skirmish_harness,
     };
     use starforge_content::ContentError;
-    use starforge_core::{PlayerId, SessionId};
+    use starforge_core::{InfrastructureKind, PlayerId, SessionId};
 
     #[test]
     fn starter_harness_loads_from_repo_files() {
@@ -101,6 +101,25 @@ mod tests {
         assert!(
             harness.scenario_config.connections.len()
                 >= harness.scenario_config.starting_locations.len()
+        );
+        assert!(
+            harness
+                .scenario_config
+                .starting_locations
+                .iter()
+                .any(|location| {
+                    location
+                        .starting_infrastructure
+                        .iter()
+                        .any(|seed| seed.kind == InfrastructureKind::CommandNexus)
+                })
+        );
+        assert!(
+            harness
+                .scenario_config
+                .starting_locations
+                .iter()
+                .any(|location| location.hostile_remnant.is_some())
         );
     }
 

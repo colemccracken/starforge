@@ -2,9 +2,10 @@ use std::{fmt, fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 use starforge_core::{
-    BuildCapacity, EnergyPotential, GameConfig, LocationConnection, LocationKind, MatchSeed,
-    PlayerId, RelayStatus, ResourceRichness, ScenarioConfig, StartingLocation, StrategicPosition,
-    TerritoryState,
+    BuildCapacity, EnergyPotential, GameConfig, HostileRemnantKind, HostileRemnantSeed,
+    InfrastructureKind, InfrastructureSeed, LocationConnection, LocationKind, MatchSeed, PlayerId,
+    RelayStatus, ResourceRichness, ScenarioConfig, StartingLocation, StrategicPosition,
+    TerritoryState, ThreatLevel,
 };
 
 #[derive(Debug)]
@@ -252,7 +253,8 @@ fn generate_starting_locations(
             relay_status: RelayStatus::Connected,
             orbital_slots: world.homeworld_orbital_slots,
             has_environmental_hazard: false,
-            hostile_remnant_present: false,
+            starting_infrastructure: homeworld_infrastructure_package(),
+            hostile_remnant: None,
         });
     }
 
@@ -276,7 +278,8 @@ fn generate_starting_locations(
                 world.neutral_orbital_slots_max,
             ),
             has_environmental_hazard: false,
-            hostile_remnant_present: false,
+            starting_infrastructure: Vec::new(),
+            hostile_remnant: None,
         });
     }
 
@@ -303,7 +306,8 @@ fn generate_starting_locations(
     let mut remnant_candidates: Vec<usize> = (neutral_start..locations.len()).collect();
     rng.shuffle(&mut remnant_candidates);
     for &index in remnant_candidates.iter().take(hostile_remnant_worlds) {
-        locations[index].hostile_remnant_present = true;
+        locations[index].hostile_remnant =
+            Some(roll_hostile_remnant(&mut rng, &locations[index].kind));
     }
 
     validate_generated_locations(&locations, players)?;
@@ -315,6 +319,28 @@ struct WorldAttributes {
     resource_richness: ResourceRichness,
     energy_potential: EnergyPotential,
     build_capacity: BuildCapacity,
+}
+
+fn homeworld_infrastructure_package() -> Vec<InfrastructureSeed> {
+    vec![
+        infrastructure_seed(InfrastructureKind::CommandNexus),
+        infrastructure_seed(InfrastructureKind::MiningSite),
+        infrastructure_seed(InfrastructureKind::EnergyProducer),
+        infrastructure_seed(InfrastructureKind::Datacenter),
+        infrastructure_seed(InfrastructureKind::RelayUplink),
+        infrastructure_seed(InfrastructureKind::ShipyardRing),
+        infrastructure_seed(InfrastructureKind::MilitaryWorks),
+        infrastructure_seed(InfrastructureKind::GroundDefenseSite),
+    ]
+}
+
+fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
+    InfrastructureSeed {
+        kind,
+        tier: 1,
+        starts_online: true,
+        starts_damaged: false,
+    }
 }
 
 fn homeworld_attributes() -> WorldAttributes {
@@ -419,6 +445,40 @@ fn roll_strategic_position(rng: &mut SeededRng, is_homeworld: bool) -> Strategic
     )
 }
 
+fn roll_hostile_remnant(rng: &mut SeededRng, location_kind: &LocationKind) -> HostileRemnantSeed {
+    let kind = roll_from_slice(
+        rng,
+        &[
+            HostileRemnantKind::AutonomousDefenseCluster,
+            HostileRemnantKind::RogueColony,
+            HostileRemnantKind::DormantMilitaryRuin,
+        ],
+    );
+
+    let threat_level = match location_kind {
+        LocationKind::HabitablePlanet | LocationKind::VolcanicWorld => {
+            roll_from_slice(rng, &[ThreatLevel::Medium, ThreatLevel::High])
+        }
+        _ => roll_from_slice(rng, &[ThreatLevel::Low, ThreatLevel::Medium]),
+    };
+
+    let holds_orbital_defenses = matches!(
+        kind,
+        HostileRemnantKind::AutonomousDefenseCluster | HostileRemnantKind::DormantMilitaryRuin
+    );
+    let holds_surface_defenses = !matches!(
+        location_kind,
+        LocationKind::AsteroidCluster | LocationKind::GasGiant
+    );
+
+    HostileRemnantSeed {
+        kind,
+        threat_level,
+        holds_orbital_defenses,
+        holds_surface_defenses,
+    }
+}
+
 fn validate_generated_locations(
     locations: &[StartingLocation],
     players: &[PlayerSlotDocument],
@@ -452,10 +512,11 @@ fn validate_generated_locations(
             || location.controller != location.homeworld_of
             || location.relay_status != RelayStatus::Connected
             || location.has_environmental_hazard
-            || location.hostile_remnant_present
+            || location.hostile_remnant.is_some()
             || location.resource_richness != ResourceRichness::Rich
             || location.energy_potential != EnergyPotential::High
             || location.build_capacity != BuildCapacity::Expansive
+            || !has_required_homeworld_infrastructure(location)
         {
             return Err(ContentError::Validation(
                 "generated homeworld invariant violated".to_owned(),
@@ -464,7 +525,7 @@ fn validate_generated_locations(
     }
 
     for location in locations {
-        if location.hostile_remnant_present && location.territory != TerritoryState::Neutral {
+        if location.hostile_remnant.is_some() && location.territory != TerritoryState::Neutral {
             return Err(ContentError::Validation(
                 "hostile remnants may only appear on neutral locations".to_owned(),
             ));
@@ -472,6 +533,25 @@ fn validate_generated_locations(
     }
 
     Ok(())
+}
+
+fn has_required_homeworld_infrastructure(location: &StartingLocation) -> bool {
+    let required = [
+        InfrastructureKind::CommandNexus,
+        InfrastructureKind::MiningSite,
+        InfrastructureKind::EnergyProducer,
+        InfrastructureKind::Datacenter,
+        InfrastructureKind::RelayUplink,
+        InfrastructureKind::ShipyardRing,
+        InfrastructureKind::MilitaryWorks,
+        InfrastructureKind::GroundDefenseSite,
+    ];
+
+    required.iter().all(|kind| {
+        location.starting_infrastructure.iter().any(|seed| {
+            &seed.kind == kind && seed.tier == 1 && seed.starts_online && !seed.starts_damaged
+        })
+    })
 }
 
 fn generate_location_connections(
@@ -670,7 +750,8 @@ mod tests {
         parse_scenario_document,
     };
     use starforge_core::{
-        BuildCapacity, EnergyPotential, LocationKind, RelayStatus, ResourceRichness, TerritoryState,
+        BuildCapacity, EnergyPotential, InfrastructureKind, LocationKind, RelayStatus,
+        ResourceRichness, TerritoryState,
     };
 
     const RULESET_YAML: &str = r#"
@@ -739,7 +820,11 @@ players:
                 && location.controller == location.homeworld_of
                 && location.relay_status == RelayStatus::Connected
                 && !location.has_environmental_hazard
-                && !location.hostile_remnant_present
+                && location.hostile_remnant.is_none()
+                && location
+                    .starting_infrastructure
+                    .iter()
+                    .any(|seed| seed.kind == InfrastructureKind::CommandNexus)
         }));
 
         assert!(
@@ -752,7 +837,7 @@ players:
             scenario_config
                 .starting_locations
                 .iter()
-                .filter(|location| location.hostile_remnant_present)
+                .filter(|location| location.hostile_remnant.is_some())
                 .all(|location| location.territory == TerritoryState::Neutral)
         );
         assert!(scenario_config.connections.iter().all(|connection| {

@@ -83,7 +83,8 @@ pub struct LocationState {
     pub relay_status: RelayStatus,
     pub orbital_slots: u8,
     pub has_environmental_hazard: bool,
-    pub hostile_remnant_present: bool,
+    pub starting_infrastructure: Vec<InfrastructureSeed>,
+    pub hostile_remnant: Option<HostileRemnantSeed>,
 }
 
 impl From<StartingLocation> for LocationState {
@@ -102,7 +103,8 @@ impl From<StartingLocation> for LocationState {
             relay_status: location.relay_status,
             orbital_slots: location.orbital_slots,
             has_environmental_hazard: location.has_environmental_hazard,
-            hostile_remnant_present: location.hostile_remnant_present,
+            starting_infrastructure: location.starting_infrastructure,
+            hostile_remnant: location.hostile_remnant,
         }
     }
 }
@@ -142,6 +144,22 @@ pub struct AgentAssignment {
     pub reserved_throughput: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InfrastructureSeed {
+    pub kind: InfrastructureKind,
+    pub tier: u8,
+    pub starts_online: bool,
+    pub starts_damaged: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostileRemnantSeed {
+    pub kind: HostileRemnantKind,
+    pub threat_level: ThreatLevel,
+    pub holds_orbital_defenses: bool,
+    pub holds_surface_defenses: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum LocationKind {
     HabitablePlanet,
@@ -151,6 +169,32 @@ pub enum LocationKind {
     Moon,
     AsteroidCluster,
     GasGiant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum InfrastructureKind {
+    CommandNexus,
+    MiningSite,
+    EnergyProducer,
+    Datacenter,
+    RelayUplink,
+    ShipyardRing,
+    MilitaryWorks,
+    GroundDefenseSite,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum HostileRemnantKind {
+    AutonomousDefenseCluster,
+    RogueColony,
+    DormantMilitaryRuin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ThreatLevel {
+    Low,
+    Medium,
+    High,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

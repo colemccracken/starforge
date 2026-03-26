@@ -381,7 +381,8 @@ impl GameSession {
             relay_status: RelayStatus::default(),
             orbital_slots: 1,
             has_environmental_hazard: false,
-            hostile_remnant_present: false,
+            starting_infrastructure: Vec::new(),
+            hostile_remnant: None,
         });
         self.state
             .locations
