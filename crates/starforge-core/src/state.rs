@@ -159,11 +159,12 @@ impl GameState {
                     match project.kind {
                         InfrastructureProjectKind::Repair {
                             infrastructure_kind,
+                            target_index,
                         } => {
                             if let Some(infrastructure) = location
                                 .infrastructure
-                                .iter_mut()
-                                .find(|infrastructure| infrastructure.kind == infrastructure_kind)
+                                .get_mut(target_index)
+                                .filter(|infrastructure| infrastructure.kind == infrastructure_kind)
                             {
                                 infrastructure.condition = InfrastructureCondition::Operational;
                                 infrastructure.wear = 0;
@@ -172,6 +173,7 @@ impl GameState {
                                     kind: infrastructure_kind.clone(),
                                     project_kind: InfrastructureProjectKind::Repair {
                                         infrastructure_kind,
+                                        target_index,
                                     },
                                 });
                             }
@@ -486,6 +488,8 @@ pub struct InfrastructureProjectState {
 pub enum InfrastructureProjectKind {
     Repair {
         infrastructure_kind: InfrastructureKind,
+        #[serde(default)]
+        target_index: usize,
     },
     Construction {
         infrastructure_kind: InfrastructureKind,

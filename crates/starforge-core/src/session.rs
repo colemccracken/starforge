@@ -645,46 +645,64 @@ impl GameSession {
         location_id: u32,
         infrastructure_kind: InfrastructureKind,
     ) -> Result<Vec<EventKind>, ValidationError> {
-        let (connected_to_empire, build_capacity, has_environmental_hazard, condition) = {
+        let (
+            connected_to_empire,
+            build_capacity,
+            has_environmental_hazard,
+            condition,
+            target_index,
+        ) = {
             let location = self.controlled_location_state(player_id, location_id)?;
-            if location.infrastructure_projects.iter().any(|project| {
-                matches!(
-                    project.kind,
+            let queued_target_indices: Vec<usize> = location
+                .infrastructure_projects
+                .iter()
+                .filter_map(|project| match project.kind {
                     InfrastructureProjectKind::Repair {
                         infrastructure_kind: ref queued_kind,
-                    } if *queued_kind == infrastructure_kind
-                )
-            }) {
-                return Err(ValidationError {
-                    code: "repair_already_queued".to_owned(),
-                    message: "a repair project is already queued for this infrastructure"
-                        .to_owned(),
-                });
-            }
+                        target_index,
+                    } if *queued_kind == infrastructure_kind => Some(target_index),
+                    _ => None,
+                })
+                .collect();
 
-            let infrastructure = location
+            let (target_index, infrastructure) = location
                 .infrastructure
                 .iter()
-                .find(|infrastructure| infrastructure.kind == infrastructure_kind)
+                .enumerate()
+                .find(|(index, infrastructure)| {
+                    infrastructure.kind == infrastructure_kind
+                        && infrastructure.condition != InfrastructureCondition::Operational
+                        && !queued_target_indices.contains(index)
+                })
                 .ok_or(ValidationError {
-                    code: "missing_infrastructure".to_owned(),
-                    message: "repair command references infrastructure that is not present at the location"
-                        .to_owned(),
+                    code: if location
+                        .infrastructure
+                        .iter()
+                        .any(|infrastructure| infrastructure.kind == infrastructure_kind)
+                    {
+                        "infrastructure_not_damaged".to_owned()
+                    } else {
+                        "missing_infrastructure".to_owned()
+                    },
+                    message: if location
+                        .infrastructure
+                        .iter()
+                        .any(|infrastructure| infrastructure.kind == infrastructure_kind)
+                    {
+                        "repair can only be queued for degraded or offline infrastructure that is not already under repair"
+                            .to_owned()
+                    } else {
+                        "repair command references infrastructure that is not present at the location"
+                            .to_owned()
+                    },
                 })?;
-
-            if infrastructure.condition == InfrastructureCondition::Operational {
-                return Err(ValidationError {
-                    code: "infrastructure_not_damaged".to_owned(),
-                    message: "repair can only be queued for degraded or offline infrastructure"
-                        .to_owned(),
-                });
-            }
 
             (
                 location.economy.connected_to_empire,
                 location.build_capacity.clone(),
                 location.has_environmental_hazard,
                 infrastructure.condition.clone(),
+                target_index,
             )
         };
 
@@ -732,6 +750,7 @@ impl GameSession {
             .push(InfrastructureProjectState {
                 kind: InfrastructureProjectKind::Repair {
                     infrastructure_kind: infrastructure_kind.clone(),
+                    target_index,
                 },
                 remaining_ticks: duration_ticks,
                 total_ticks: duration_ticks,

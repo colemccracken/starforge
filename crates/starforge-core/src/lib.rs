@@ -164,6 +164,31 @@ mod tests {
         }
     }
 
+    fn duplicated_damaged_datacenter_scenario() -> ScenarioConfig {
+        let mut homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        if let Some(datacenter) = homeworld
+            .starting_infrastructure
+            .iter_mut()
+            .find(|seed| seed.kind == InfrastructureKind::Datacenter)
+        {
+            datacenter.starts_damaged = true;
+        }
+        homeworld
+            .starting_infrastructure
+            .push(damaged_infrastructure_seed(InfrastructureKind::Datacenter));
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
     fn connected_remote_repair_scenario() -> ScenarioConfig {
         let homeworld = compute_homeworld(
             PlayerId::new(1),
@@ -1300,6 +1325,76 @@ mod tests {
                 kind: InfrastructureKind::Datacenter,
             }
         )));
+    }
+
+    #[test]
+    fn duplicate_same_kind_repairs_can_be_queued_and_completed() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            duplicated_damaged_datacenter_scenario(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::QueueInfrastructureRepair {
+                    location_id: 1,
+                    infrastructure_kind: InfrastructureKind::Datacenter,
+                },
+            })
+            .expect("first duplicate repair should be accepted");
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::QueueInfrastructureRepair {
+                    location_id: 1,
+                    infrastructure_kind: InfrastructureKind::Datacenter,
+                },
+            })
+            .expect("second duplicate repair should be accepted");
+
+        assert_eq!(
+            session.state().locations[0].infrastructure_projects.len(),
+            2
+        );
+
+        session.advance_tick();
+        session.advance_tick();
+
+        let repaired_datacenters = session.state().locations[0]
+            .infrastructure
+            .iter()
+            .filter(|infrastructure| {
+                infrastructure.kind == InfrastructureKind::Datacenter
+                    && infrastructure.condition == InfrastructureCondition::Operational
+            })
+            .count();
+
+        assert_eq!(repaired_datacenters, 2);
+        assert_eq!(session.state().players[0].throughput.available, 60);
+        assert_eq!(
+            session
+                .event_log()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        &event.kind,
+                        EventKind::InfrastructureRepairCompleted {
+                            location_id: 1,
+                            kind: InfrastructureKind::Datacenter,
+                        }
+                    )
+                })
+                .count(),
+            2
+        );
     }
 
     #[test]
