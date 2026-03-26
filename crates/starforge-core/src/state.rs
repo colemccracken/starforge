@@ -112,6 +112,31 @@ impl GameState {
         self.recompute_economy();
     }
 
+    pub(crate) fn next_transit_id(&self) -> u32 {
+        self.transits
+            .iter()
+            .map(|transit| transit.transit_id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    pub(crate) fn resolve_arrived_transits(&mut self) -> Vec<TransitState> {
+        let mut arrived = Vec::new();
+        let mut in_flight = Vec::with_capacity(self.transits.len());
+
+        for transit in std::mem::take(&mut self.transits) {
+            if transit.eta_tick <= self.tick_id {
+                arrived.push(transit);
+            } else {
+                in_flight.push(transit);
+            }
+        }
+
+        self.transits = in_flight;
+        arrived
+    }
+
     pub(crate) fn advance_infrastructure_projects(
         &mut self,
     ) -> Vec<InfrastructureProjectCompletion> {
@@ -301,9 +326,11 @@ impl From<StartingLocation> for LocationState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransitState {
     pub transit_id: u32,
+    pub player_id: PlayerId,
     pub origin_id: u32,
     pub destination_id: u32,
     pub eta_tick: TickId,
+    pub kind: TransitKind,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +384,7 @@ pub struct PlayerStateView {
     pub throughput: ThroughputBudget,
     pub visibility: VisibilityState,
     pub locations: Vec<LocationView>,
+    pub transits: Vec<TransitView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,6 +414,20 @@ pub enum LocationVisibility {
     Observed,
     Surveyed,
     Obscured,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitView {
+    pub transit_id: u32,
+    pub origin_id: u32,
+    pub destination_id: u32,
+    pub eta_tick: TickId,
+    pub kind: TransitKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum TransitKind {
+    Survey,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

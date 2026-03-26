@@ -3,7 +3,8 @@ use crate::{
     GameConfig, GameState, InfrastructureCondition, InfrastructureKind, InfrastructureProjectKind,
     InfrastructureProjectState, LocationKind, LocationState, LocationView, LocationVisibility,
     PlayerId, PlayerStateView, RelayStatus, ReplayLog, ResourceRichness, ResourceStockpiles,
-    ScenarioConfig, SessionId, Snapshot, StrategicPosition, TerritoryState, ValidationError,
+    ScenarioConfig, SessionId, Snapshot, StrategicPosition, TerritoryState, TickId, TransitKind,
+    TransitState, TransitView, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,17 +142,17 @@ impl GameSession {
         let completions = self.state.advance_infrastructure_projects();
         if !completions.is_empty() {
             for completion in completions {
-                let kind = match completion.project_kind {
+                let kind = match &completion.project_kind {
                     InfrastructureProjectKind::Repair { .. } => {
                         EventKind::InfrastructureRepairCompleted {
                             location_id: completion.location_id,
-                            kind: completion.kind,
+                            kind: completion.kind.clone(),
                         }
                     }
                     InfrastructureProjectKind::Construction { .. } => {
                         EventKind::InfrastructureConstructionCompleted {
                             location_id: completion.location_id,
-                            kind: completion.kind,
+                            kind: completion.kind.clone(),
                         }
                     }
                 };
@@ -197,6 +198,11 @@ impl GameSession {
         }
 
         self.refresh_visibility();
+
+        let arrived_transits = self.state.resolve_arrived_transits();
+        for transit in arrived_transits {
+            self.handle_arrived_transit(transit);
+        }
     }
 
     pub fn accept_command(&mut self, command: CommandEnvelope) -> Result<(), ValidationError> {
@@ -275,6 +281,13 @@ impl GameSession {
             .iter()
             .map(|location| project_location_for_player(location, player_id, &player.visibility))
             .collect();
+        let transits = self
+            .state
+            .transits
+            .iter()
+            .filter(|transit| transit.player_id == player_id)
+            .map(project_transit_for_player)
+            .collect();
 
         Ok(PlayerStateView {
             tick_id: self.state.tick_id,
@@ -283,6 +296,7 @@ impl GameSession {
             throughput: player.throughput.clone(),
             visibility: player.visibility.clone(),
             locations,
+            transits,
         })
     }
 
@@ -342,6 +356,14 @@ impl GameSession {
                 player_id,
                 location_id,
                 infrastructure_kind,
+            ),
+            CommandKind::DispatchSurveyTransit {
+                origin_location_id,
+                destination_location_id,
+            } => self.apply_dispatch_survey_transit(
+                player_id,
+                origin_location_id,
+                destination_location_id,
             ),
             CommandKind::SurveyLocation { location_id } => {
                 self.apply_survey_location(player_id, location_id)
@@ -723,21 +745,73 @@ impl GameSession {
         }])
     }
 
+    fn apply_dispatch_survey_transit(
+        &mut self,
+        player_id: PlayerId,
+        origin_location_id: u32,
+        destination_location_id: u32,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        if origin_location_id == destination_location_id {
+            return Err(ValidationError {
+                code: "same_origin_destination".to_owned(),
+                message: "survey transit requires distinct origin and destination locations"
+                    .to_owned(),
+            });
+        }
+
+        self.controlled_location_state(player_id, origin_location_id)?;
+        self.location_exists(destination_location_id)?;
+        let travel_time_ticks =
+            self.travel_time_between(origin_location_id, destination_location_id)?;
+        let transit_id = self.state.next_transit_id();
+        let eta_tick = TickId::new(
+            self.state
+                .tick_id
+                .0
+                .saturating_add(u64::from(travel_time_ticks)),
+        );
+
+        self.state.transits.push(TransitState {
+            transit_id,
+            player_id,
+            origin_id: origin_location_id,
+            destination_id: destination_location_id,
+            eta_tick,
+            kind: TransitKind::Survey,
+        });
+        self.state
+            .transits
+            .sort_by_key(|transit| (transit.eta_tick, transit.transit_id));
+
+        Ok(vec![EventKind::TransitDispatched {
+            transit_id,
+            origin_id: origin_location_id,
+            destination_id: destination_location_id,
+            eta_tick,
+            kind: TransitKind::Survey,
+        }])
+    }
+
     fn apply_survey_location(
         &mut self,
         player_id: PlayerId,
         location_id: u32,
     ) -> Result<Vec<EventKind>, ValidationError> {
-        if !self
-            .state
-            .locations
-            .iter()
-            .any(|location| location.location_id == location_id)
-        {
+        self.location_exists(location_id)?;
+
+        let can_survey = self.state.locations.iter().any(|location| {
+            location.location_id == location_id
+                && location.controller == Some(player_id)
+                && location.territory == TerritoryState::Owned
+        }) || self
+            .player_state(player_id)?
+            .visibility
+            .observed_location_ids
+            .contains(&location_id);
+        if !can_survey {
             return Err(ValidationError {
-                code: "unknown_location".to_owned(),
-                message: "survey command references a location that does not exist in the session"
-                    .to_owned(),
+                code: "location_not_observed".to_owned(),
+                message: "survey requires current visibility at the target location".to_owned(),
             });
         }
 
@@ -745,6 +819,33 @@ impl GameSession {
         player.visibility.mark_surveyed(location_id);
 
         Ok(vec![EventKind::LocationSurveyed { location_id }])
+    }
+
+    fn handle_arrived_transit(&mut self, transit: TransitState) {
+        self.event_log.push(EventRecord {
+            tick_id: self.state.tick_id,
+            player_id: Some(transit.player_id),
+            kind: EventKind::TransitArrived {
+                transit_id: transit.transit_id,
+                destination_id: transit.destination_id,
+                kind: transit.kind.clone(),
+            },
+        });
+
+        match transit.kind {
+            TransitKind::Survey => {
+                if let Ok(player) = self.player_state_mut(transit.player_id) {
+                    player.visibility.mark_surveyed(transit.destination_id);
+                }
+                self.event_log.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: Some(transit.player_id),
+                    kind: EventKind::LocationSurveyed {
+                        location_id: transit.destination_id,
+                    },
+                });
+            }
+        }
     }
 
     fn player_state(&self, player_id: PlayerId) -> Result<&crate::PlayerState, ValidationError> {
@@ -828,6 +929,45 @@ impl GameSession {
         }
 
         Ok(location)
+    }
+
+    fn location_exists(&self, location_id: u32) -> Result<(), ValidationError> {
+        if self
+            .state
+            .locations
+            .iter()
+            .any(|location| location.location_id == location_id)
+        {
+            Ok(())
+        } else {
+            Err(ValidationError {
+                code: "unknown_location".to_owned(),
+                message: "command references a location that does not exist in the session"
+                    .to_owned(),
+            })
+        }
+    }
+
+    fn travel_time_between(
+        &self,
+        origin_location_id: u32,
+        destination_location_id: u32,
+    ) -> Result<u32, ValidationError> {
+        self.state
+            .connections
+            .iter()
+            .find(|connection| {
+                (connection.from_location_id == origin_location_id
+                    && connection.to_location_id == destination_location_id)
+                    || (connection.from_location_id == destination_location_id
+                        && connection.to_location_id == origin_location_id)
+            })
+            .map(|connection| connection.travel_time_ticks)
+            .ok_or(ValidationError {
+                code: "no_route".to_owned(),
+                message: "no direct route exists between the requested origin and destination"
+                    .to_owned(),
+            })
     }
 
     fn controlled_location_state_mut(
@@ -1038,6 +1178,16 @@ fn project_location_for_player(
         economy: None,
         stockpiles: None,
         hostile_remnant_present: None,
+    }
+}
+
+fn project_transit_for_player(transit: &TransitState) -> TransitView {
+    TransitView {
+        transit_id: transit.transit_id,
+        origin_id: transit.origin_id,
+        destination_id: transit.destination_id,
+        eta_tick: transit.eta_tick,
+        kind: transit.kind.clone(),
     }
 }
 

@@ -41,6 +41,10 @@ pub enum CommandKind {
         location_id: u32,
         infrastructure_kind: InfrastructureKind,
     },
+    DispatchSurveyTransit {
+        origin_location_id: u32,
+        destination_location_id: u32,
+    },
     SurveyLocation {
         location_id: u32,
     },

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CommandKind, InfrastructureCondition, InfrastructureKind, MatchSeed, PlayerId, RelayStatus,
-    ResourceStockpiles, TickId, ValidationError,
+    ResourceStockpiles, TickId, TransitKind, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +81,18 @@ pub enum EventKind {
     InfrastructureConstructionCompleted {
         location_id: u32,
         kind: InfrastructureKind,
+    },
+    TransitDispatched {
+        transit_id: u32,
+        origin_id: u32,
+        destination_id: u32,
+        eta_tick: TickId,
+        kind: TransitKind,
+    },
+    TransitArrived {
+        transit_id: u32,
+        destination_id: u32,
+        kind: TransitKind,
     },
     LocationSurveyed {
         location_id: u32,

@@ -21,7 +21,7 @@ pub use state::{
     LocationEconomyState, LocationKind, LocationState, LocationView, LocationVisibility,
     PlayerEconomyState, PlayerState, PlayerStateView, RelayStatus, ResourceRichness,
     ResourceStockpiles, StrategicPosition, TerritoryState, ThreatLevel, ThroughputBudget,
-    TrainingRunState, TransitState, VictoryState, VisibilityState,
+    TrainingRunState, TransitKind, TransitState, TransitView, VictoryState, VisibilityState,
 };
 
 #[cfg(test)]
@@ -1341,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn survey_command_reveals_location_then_intel_goes_stale() {
+    fn survey_transit_reveals_location_on_arrival_then_intel_goes_stale() {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
@@ -1354,9 +1354,39 @@ mod tests {
                 player_id: PlayerId::new(1),
                 issued_at_tick: TickId::default(),
                 apply_at_tick: TickId::default(),
-                command: CommandKind::SurveyLocation { location_id: 2 },
+                command: CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
             })
-            .expect("survey should be accepted");
+            .expect("survey transit should be accepted");
+
+        let initial_view = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should be available");
+        let hidden = initial_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("target location should be present");
+        assert_eq!(hidden.visibility, LocationVisibility::Obscured);
+        assert_eq!(initial_view.transits.len(), 1);
+        assert_eq!(initial_view.transits[0].origin_id, 1);
+        assert_eq!(initial_view.transits[0].destination_id, 2);
+        assert_eq!(initial_view.transits[0].eta_tick, TickId::new(12));
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TransitDispatched {
+                origin_id: 1,
+                destination_id: 2,
+                eta_tick,
+                ..
+            } if *eta_tick == TickId::new(12)
+        )));
+
+        for _ in 0..12 {
+            session.advance_tick();
+        }
 
         let observed_view = session
             .player_view(PlayerId::new(1))
@@ -1370,6 +1400,14 @@ mod tests {
         assert_eq!(observed.visibility, LocationVisibility::Observed);
         assert_eq!(observed.kind, Some(LocationKind::Moon));
         assert!(observed.infrastructure.is_some());
+        assert!(observed_view.transits.is_empty());
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TransitArrived {
+                destination_id: 2,
+                ..
+            }
+        )));
         assert!(
             session
                 .event_log()
