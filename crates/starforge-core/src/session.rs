@@ -199,6 +199,10 @@ impl GameSession {
 
         self.refresh_visibility();
 
+        for event in self.advance_training_runs() {
+            self.event_log.push(event);
+        }
+
         let arrived_transits = self.state.resolve_arrived_transits();
         for transit in arrived_transits {
             self.handle_arrived_transit(transit);
@@ -217,6 +221,24 @@ impl GameSession {
             let error = ValidationError {
                 code: "apply_in_past".to_owned(),
                 message: "command apply tick is in the past".to_owned(),
+            };
+            self.event_log.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: Some(command.player_id),
+                kind: EventKind::CommandRejected {
+                    command: command.command,
+                    error: error.clone(),
+                },
+            });
+
+            return Err(error);
+        }
+
+        if self.state.victory != crate::VictoryState::Ongoing {
+            let error = ValidationError {
+                code: "game_already_over".to_owned(),
+                message: "the session already has a winner and cannot accept more commands"
+                    .to_owned(),
             };
             self.event_log.push(EventRecord {
                 tick_id: self.state.tick_id,
@@ -273,6 +295,52 @@ impl GameSession {
         self.snapshot().to_json()
     }
 
+    pub fn current_tick(&self) -> TickId {
+        self.state.tick_id
+    }
+
+    pub fn issue_command_now(
+        &mut self,
+        player_id: PlayerId,
+        command: CommandKind,
+    ) -> Result<(), ValidationError> {
+        let before_events = self.event_log.len();
+        let command_for_lookup = command.clone();
+        self.accept_command(CommandEnvelope {
+            session_id: self.session_id,
+            player_id,
+            issued_at_tick: self.state.tick_id,
+            apply_at_tick: self.state.tick_id,
+            command,
+        })?;
+
+        if let Some(error) =
+            self.event_log[before_events..]
+                .iter()
+                .find_map(|event| match &event.kind {
+                    EventKind::CommandRejected { command, error }
+                        if event.player_id == Some(player_id) && *command == command_for_lookup =>
+                    {
+                        Some(error.clone())
+                    }
+                    _ => None,
+                })
+        {
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    pub fn advance_ticks(&mut self, ticks: u32) {
+        for _ in 0..ticks {
+            self.advance_tick();
+            if self.state.victory != crate::VictoryState::Ongoing {
+                break;
+            }
+        }
+    }
+
     pub fn player_view(&self, player_id: PlayerId) -> Result<PlayerStateView, ValidationError> {
         let player = self.player_state(player_id)?;
         let locations = self
@@ -292,8 +360,10 @@ impl GameSession {
         Ok(PlayerStateView {
             tick_id: self.state.tick_id,
             player_id,
+            model_tier: player.model_tier,
             economy: player.economy.clone(),
             throughput: player.throughput.clone(),
+            training: player.training.clone(),
             visibility: player.visibility.clone(),
             locations,
             transits,
@@ -358,7 +428,7 @@ impl GameSession {
             CommandKind::SetRelayStatus {
                 location_id,
                 relay_status,
-            } => self.apply_set_relay_status(location_id, relay_status),
+            } => self.apply_set_relay_status(player_id, location_id, relay_status),
             CommandKind::QueueInfrastructureRepair {
                 location_id,
                 infrastructure_kind,
@@ -376,13 +446,35 @@ impl GameSession {
             CommandKind::DispatchSurveyTransit {
                 origin_location_id,
                 destination_location_id,
-            } => self.apply_dispatch_survey_transit(
+            } => self.apply_dispatch_transit(
                 player_id,
                 origin_location_id,
                 destination_location_id,
+                TransitKind::Survey,
+            ),
+            CommandKind::DispatchPacificationTransit {
+                origin_location_id,
+                destination_location_id,
+            } => self.apply_dispatch_transit(
+                player_id,
+                origin_location_id,
+                destination_location_id,
+                TransitKind::Pacification,
+            ),
+            CommandKind::DispatchClaimTransit {
+                origin_location_id,
+                destination_location_id,
+            } => self.apply_dispatch_transit(
+                player_id,
+                origin_location_id,
+                destination_location_id,
+                TransitKind::Claim,
             ),
             CommandKind::SurveyLocation { location_id } => {
                 self.apply_survey_location(player_id, location_id)
+            }
+            CommandKind::StartTrainingRun { target_tier } => {
+                self.apply_start_training_run(player_id, target_tier)
             }
         };
 
@@ -530,10 +622,11 @@ impl GameSession {
 
     fn apply_set_relay_status(
         &mut self,
+        player_id: PlayerId,
         location_id: u32,
         relay_status: RelayStatus,
     ) -> Result<Vec<EventKind>, ValidationError> {
-        let location = self.location_state_mut(location_id)?;
+        let location = self.controlled_location_state_mut(player_id, location_id)?;
         location.relay_status = relay_status.clone();
         self.state.recompute_economy();
 
@@ -761,22 +854,23 @@ impl GameSession {
         }])
     }
 
-    fn apply_dispatch_survey_transit(
+    fn apply_dispatch_transit(
         &mut self,
         player_id: PlayerId,
         origin_location_id: u32,
         destination_location_id: u32,
+        kind: TransitKind,
     ) -> Result<Vec<EventKind>, ValidationError> {
         if origin_location_id == destination_location_id {
             return Err(ValidationError {
                 code: "same_origin_destination".to_owned(),
-                message: "survey transit requires distinct origin and destination locations"
-                    .to_owned(),
+                message: "transit requires distinct origin and destination locations".to_owned(),
             });
         }
 
         self.controlled_location_state(player_id, origin_location_id)?;
         self.location_exists(destination_location_id)?;
+        self.validate_transit_destination(player_id, destination_location_id, &kind)?;
         let travel_time_ticks =
             self.travel_time_between(origin_location_id, destination_location_id)?;
         let transit_id = self.state.next_transit_id();
@@ -793,7 +887,7 @@ impl GameSession {
             origin_id: origin_location_id,
             destination_id: destination_location_id,
             eta_tick,
-            kind: TransitKind::Survey,
+            kind: kind.clone(),
         });
         self.state
             .transits
@@ -804,7 +898,7 @@ impl GameSession {
             origin_id: origin_location_id,
             destination_id: destination_location_id,
             eta_tick,
-            kind: TransitKind::Survey,
+            kind,
         }])
     }
 
@@ -837,6 +931,97 @@ impl GameSession {
         Ok(vec![EventKind::LocationSurveyed { location_id }])
     }
 
+    fn apply_start_training_run(
+        &mut self,
+        player_id: PlayerId,
+        target_tier: u8,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        if !(2..=5).contains(&target_tier) {
+            return Err(ValidationError {
+                code: "invalid_target_tier".to_owned(),
+                message: "training targets must be between tiers 2 and 5".to_owned(),
+            });
+        }
+
+        let player = self.player_state(player_id)?;
+        if player.training.is_some() {
+            return Err(ValidationError {
+                code: "training_already_active".to_owned(),
+                message: "a training run is already active for this player".to_owned(),
+            });
+        }
+
+        if target_tier != player.model_tier.saturating_add(1) {
+            return Err(ValidationError {
+                code: "invalid_tier_progression".to_owned(),
+                message: "training runs must target the next unlocked tier".to_owned(),
+            });
+        }
+
+        let required_training_throughput = training_throughput_requirement(target_tier);
+        if player.throughput.reserved_for_training < required_training_throughput {
+            return Err(ValidationError {
+                code: "insufficient_training_budget".to_owned(),
+                message:
+                    "reserved training throughput is below the requirement for the requested tier"
+                        .to_owned(),
+            });
+        }
+
+        let owned_worlds = self
+            .state
+            .locations
+            .iter()
+            .filter(|location| {
+                location.controller == Some(player_id)
+                    && location.territory == TerritoryState::Owned
+            })
+            .count();
+        let minimum_worlds = minimum_worlds_for_tier(target_tier);
+        if owned_worlds < minimum_worlds {
+            return Err(ValidationError {
+                code: "insufficient_owned_worlds".to_owned(),
+                message: format!(
+                    "training tier {target_tier} requires control of at least {minimum_worlds} worlds"
+                ),
+            });
+        }
+
+        if !self.state.locations.iter().any(|location| {
+            location.controller == Some(player_id)
+                && location.territory == TerritoryState::Owned
+                && location.infrastructure.iter().any(|infrastructure| {
+                    infrastructure.kind == InfrastructureKind::CommandNexus
+                        && infrastructure.condition != InfrastructureCondition::Offline
+                })
+                && location.infrastructure.iter().any(|infrastructure| {
+                    infrastructure.kind == InfrastructureKind::Datacenter
+                        && infrastructure.condition != InfrastructureCondition::Offline
+                })
+        }) {
+            return Err(ValidationError {
+                code: "missing_training_site".to_owned(),
+                message: "training requires at least one owned world with an operational command nexus and datacenter"
+                    .to_owned(),
+            });
+        }
+
+        let required_ticks = training_duration_ticks(target_tier);
+        let player = self.player_state_mut(player_id)?;
+        player.training = Some(crate::TrainingRunState {
+            target_tier,
+            progress_ticks: 0,
+            required_ticks,
+            required_training_throughput,
+        });
+
+        Ok(vec![EventKind::TrainingRunStarted {
+            target_tier,
+            required_training_throughput,
+            required_ticks,
+        }])
+    }
+
     fn handle_arrived_transit(&mut self, transit: TransitState) {
         self.event_log.push(EventRecord {
             tick_id: self.state.tick_id,
@@ -861,7 +1046,186 @@ impl GameSession {
                     },
                 });
             }
+            TransitKind::Pacification => {
+                if let Ok(events) =
+                    self.resolve_pacification_arrival(transit.player_id, transit.destination_id)
+                {
+                    for kind in events {
+                        self.event_log.push(EventRecord {
+                            tick_id: self.state.tick_id,
+                            player_id: Some(transit.player_id),
+                            kind,
+                        });
+                    }
+                }
+            }
+            TransitKind::Claim => {
+                if let Ok(events) =
+                    self.resolve_claim_arrival(transit.player_id, transit.destination_id)
+                {
+                    for kind in events {
+                        self.event_log.push(EventRecord {
+                            tick_id: self.state.tick_id,
+                            player_id: Some(transit.player_id),
+                            kind,
+                        });
+                    }
+                }
+            }
         }
+    }
+
+    fn validate_transit_destination(
+        &self,
+        player_id: PlayerId,
+        destination_location_id: u32,
+        kind: &TransitKind,
+    ) -> Result<(), ValidationError> {
+        match kind {
+            TransitKind::Survey => Ok(()),
+            TransitKind::Pacification => {
+                let location = self.location_state(destination_location_id)?;
+                if location.territory != TerritoryState::Neutral {
+                    return Err(ValidationError {
+                        code: "location_not_neutral".to_owned(),
+                        message: "pacification is currently limited to neutral worlds".to_owned(),
+                    });
+                }
+
+                if !self
+                    .player_state(player_id)?
+                    .visibility
+                    .surveyed_location_ids
+                    .contains(&destination_location_id)
+                {
+                    return Err(ValidationError {
+                        code: "location_not_surveyed".to_owned(),
+                        message: "pacification requires a previously surveyed destination"
+                            .to_owned(),
+                    });
+                }
+
+                if location.hostile_remnant.is_none() {
+                    return Err(ValidationError {
+                        code: "no_hostile_remnant".to_owned(),
+                        message: "pacification requires a hostile remnant at the destination"
+                            .to_owned(),
+                    });
+                }
+
+                Ok(())
+            }
+            TransitKind::Claim => {
+                let location = self.location_state(destination_location_id)?;
+                if location.territory != TerritoryState::Neutral || location.controller.is_some() {
+                    return Err(ValidationError {
+                        code: "location_not_claimable".to_owned(),
+                        message: "claim expeditions require an unclaimed neutral world".to_owned(),
+                    });
+                }
+
+                if !self
+                    .player_state(player_id)?
+                    .visibility
+                    .surveyed_location_ids
+                    .contains(&destination_location_id)
+                {
+                    return Err(ValidationError {
+                        code: "location_not_surveyed".to_owned(),
+                        message: "claiming requires a previously surveyed destination".to_owned(),
+                    });
+                }
+
+                if location.hostile_remnant.is_some() {
+                    return Err(ValidationError {
+                        code: "hostile_remnant_present".to_owned(),
+                        message: "claiming requires hostile remnants to be cleared first"
+                            .to_owned(),
+                    });
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    fn resolve_pacification_arrival(
+        &mut self,
+        player_id: PlayerId,
+        destination_location_id: u32,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        {
+            let location = self.location_state_mut(destination_location_id)?;
+            if location.territory != TerritoryState::Neutral {
+                return Err(ValidationError {
+                    code: "location_not_neutral".to_owned(),
+                    message: "pacification arrivals require a neutral destination".to_owned(),
+                });
+            }
+
+            if location.hostile_remnant.is_none() {
+                return Err(ValidationError {
+                    code: "no_hostile_remnant".to_owned(),
+                    message: "pacification arrival found no hostile remnant to clear".to_owned(),
+                });
+            }
+
+            location.hostile_remnant = None;
+        }
+        if let Ok(player) = self.player_state_mut(player_id) {
+            player.visibility.mark_surveyed(destination_location_id);
+        }
+
+        Ok(vec![
+            EventKind::HostileRemnantCleared {
+                location_id: destination_location_id,
+            },
+            EventKind::LocationSurveyed {
+                location_id: destination_location_id,
+            },
+        ])
+    }
+
+    fn resolve_claim_arrival(
+        &mut self,
+        player_id: PlayerId,
+        destination_location_id: u32,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        {
+            let location = self.location_state_mut(destination_location_id)?;
+            if location.territory != TerritoryState::Neutral || location.controller.is_some() {
+                return Err(ValidationError {
+                    code: "location_not_claimable".to_owned(),
+                    message: "claim arrival found a destination that is no longer claimable"
+                        .to_owned(),
+                });
+            }
+
+            if location.hostile_remnant.is_some() {
+                return Err(ValidationError {
+                    code: "hostile_remnant_present".to_owned(),
+                    message: "claim arrival cannot secure a world with active hostile remnants"
+                        .to_owned(),
+                });
+            }
+
+            location.territory = TerritoryState::Owned;
+            location.controller = Some(player_id);
+            location.relay_status = RelayStatus::Connected;
+            ensure_colony_infrastructure(location);
+        }
+
+        self.state.recompute_economy();
+        if let Ok(player) = self.player_state_mut(player_id) {
+            player.visibility.mark_surveyed(destination_location_id);
+        }
+
+        let mut events = vec![EventKind::LocationClaimed {
+            location_id: destination_location_id,
+            player_id,
+        }];
+        events.extend(self.economy_updated_events());
+        Ok(events)
     }
 
     fn player_state(&self, player_id: PlayerId) -> Result<&crate::PlayerState, ValidationError> {
@@ -887,6 +1251,18 @@ impl GameSession {
             .ok_or(ValidationError {
                 code: "unknown_player".to_owned(),
                 message: "command references a player that does not exist in the session"
+                    .to_owned(),
+            })
+    }
+
+    fn location_state(&self, location_id: u32) -> Result<&LocationState, ValidationError> {
+        self.state
+            .locations
+            .iter()
+            .find(|location| location.location_id == location_id)
+            .ok_or(ValidationError {
+                code: "unknown_location".to_owned(),
+                message: "command references a location that does not exist in the session"
                     .to_owned(),
             })
     }
@@ -920,6 +1296,84 @@ impl GameSession {
         }
     }
 
+    fn advance_training_runs(&mut self) -> Vec<EventRecord> {
+        if self.state.victory != crate::VictoryState::Ongoing {
+            return Vec::new();
+        }
+
+        let owned_counts: Vec<(PlayerId, usize)> = self
+            .state
+            .players
+            .iter()
+            .map(|player| {
+                (
+                    player.player_id,
+                    self.state
+                        .locations
+                        .iter()
+                        .filter(|location| {
+                            location.controller == Some(player.player_id)
+                                && location.territory == TerritoryState::Owned
+                        })
+                        .count(),
+                )
+            })
+            .collect();
+
+        let mut events = Vec::new();
+        for player in &mut self.state.players {
+            let Some(training) = player.training.as_mut() else {
+                continue;
+            };
+
+            if self.state.victory != crate::VictoryState::Ongoing {
+                break;
+            }
+
+            let owned_count = owned_counts
+                .iter()
+                .find(|(player_id, _)| *player_id == player.player_id)
+                .map(|(_, count)| *count)
+                .unwrap_or(0);
+
+            if player.throughput.reserved_for_training < training.required_training_throughput
+                || owned_count < minimum_worlds_for_tier(training.target_tier)
+            {
+                continue;
+            }
+
+            training.progress_ticks = training.progress_ticks.saturating_add(1);
+            if training.progress_ticks < training.required_ticks {
+                continue;
+            }
+
+            let achieved_tier = training.target_tier;
+            player.model_tier = achieved_tier;
+            player.training = None;
+            events.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: Some(player.player_id),
+                kind: EventKind::TrainingRunCompleted { achieved_tier },
+            });
+
+            if achieved_tier >= 5 {
+                self.state.victory = crate::VictoryState::Won {
+                    winner: player.player_id,
+                };
+                events.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: Some(player.player_id),
+                    kind: EventKind::VictoryDeclared {
+                        winner: player.player_id,
+                        reason: "superintelligence_ascension".to_owned(),
+                    },
+                });
+            }
+        }
+
+        events
+    }
+
     fn event_visible_to_player(&self, player_id: PlayerId, event: &EventRecord) -> bool {
         match &event.kind {
             EventKind::SessionCreated { .. } | EventKind::TickAdvanced { .. } => true,
@@ -935,12 +1389,17 @@ impl GameSession {
             | EventKind::InfrastructureConstructionCompleted { .. }
             | EventKind::TransitDispatched { .. }
             | EventKind::TransitArrived { .. }
-            | EventKind::LocationSurveyed { .. } => event.player_id == Some(player_id),
+            | EventKind::LocationSurveyed { .. }
+            | EventKind::TrainingRunStarted { .. }
+            | EventKind::TrainingRunCompleted { .. } => event.player_id == Some(player_id),
             EventKind::LocationRegistered { .. } => event.player_id == Some(player_id),
             EventKind::RelayStatusChanged { location_id, .. }
-            | EventKind::InfrastructureConditionChanged { location_id, .. } => {
+            | EventKind::InfrastructureConditionChanged { location_id, .. }
+            | EventKind::HostileRemnantCleared { location_id }
+            | EventKind::LocationClaimed { location_id, .. } => {
                 self.location_is_observed_by_player(player_id, *location_id)
             }
+            EventKind::VictoryDeclared { .. } => true,
         }
     }
 
@@ -1244,6 +1703,61 @@ fn project_transit_for_player(transit: &TransitState) -> TransitView {
         destination_id: transit.destination_id,
         eta_tick: transit.eta_tick,
         kind: transit.kind.clone(),
+    }
+}
+
+fn ensure_colony_infrastructure(location: &mut LocationState) {
+    for kind in [
+        InfrastructureKind::CommandNexus,
+        InfrastructureKind::MiningSite,
+        InfrastructureKind::RelayUplink,
+    ] {
+        if location
+            .infrastructure
+            .iter()
+            .all(|infrastructure| infrastructure.kind != kind)
+        {
+            location.infrastructure.push(crate::InfrastructureState {
+                kind,
+                tier: 1,
+                condition: InfrastructureCondition::Operational,
+                wear: 0,
+            });
+        }
+    }
+
+    location
+        .infrastructure
+        .sort_by_key(|infrastructure| infrastructure.kind.clone());
+}
+
+fn training_throughput_requirement(target_tier: u8) -> u32 {
+    match target_tier {
+        2 => 20,
+        3 => 35,
+        4 => 50,
+        5 => 70,
+        _ => u32::MAX,
+    }
+}
+
+fn training_duration_ticks(target_tier: u8) -> u32 {
+    match target_tier {
+        2 => 8,
+        3 => 12,
+        4 => 16,
+        5 => 20,
+        _ => u32::MAX,
+    }
+}
+
+fn minimum_worlds_for_tier(target_tier: u8) -> usize {
+    match target_tier {
+        2 => 1,
+        3 => 2,
+        4 => 3,
+        5 => 4,
+        _ => usize::MAX,
     }
 }
 

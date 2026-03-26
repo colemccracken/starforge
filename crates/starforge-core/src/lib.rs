@@ -282,6 +282,121 @@ mod tests {
         }
     }
 
+    fn claim_fixture_scenario() -> ScenarioConfig {
+        let mut scenario = survey_fixture_scenario();
+        scenario.starting_locations[1].has_environmental_hazard = false;
+        scenario
+    }
+
+    fn remnant_fixture_scenario() -> ScenarioConfig {
+        let mut scenario = survey_fixture_scenario();
+        scenario.starting_locations[1].hostile_remnant = Some(HostileRemnantSeed {
+            kind: HostileRemnantKind::AutonomousDefenseCluster,
+            threat_level: ThreatLevel::Low,
+            holds_orbital_defenses: false,
+            holds_surface_defenses: true,
+        });
+        scenario
+    }
+
+    fn ascension_fixture_scenario() -> ScenarioConfig {
+        let homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        let second_world = StartingLocation {
+            location_id: 2,
+            name: "Argent".to_owned(),
+            kind: LocationKind::HabitablePlanet,
+            resource_richness: ResourceRichness::Rich,
+            energy_potential: EnergyPotential::High,
+            build_capacity: BuildCapacity::Expansive,
+            strategic_position: StrategicPosition::Balanced,
+            territory: TerritoryState::Owned,
+            controller: Some(PlayerId::new(1)),
+            homeworld_of: None,
+            relay_status: RelayStatus::Connected,
+            orbital_slots: 2,
+            has_environmental_hazard: false,
+            starting_infrastructure: vec![
+                infrastructure_seed(InfrastructureKind::MiningSite),
+                infrastructure_seed(InfrastructureKind::EnergyProducer),
+                infrastructure_seed(InfrastructureKind::Datacenter),
+                infrastructure_seed(InfrastructureKind::RelayUplink),
+            ],
+            hostile_remnant: None,
+        };
+        let third_world = StartingLocation {
+            location_id: 3,
+            name: "Cinder".to_owned(),
+            kind: LocationKind::BarrenWorld,
+            resource_richness: ResourceRichness::Moderate,
+            energy_potential: EnergyPotential::Moderate,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Central,
+            territory: TerritoryState::Owned,
+            controller: Some(PlayerId::new(1)),
+            homeworld_of: None,
+            relay_status: RelayStatus::Connected,
+            orbital_slots: 2,
+            has_environmental_hazard: false,
+            starting_infrastructure: vec![
+                infrastructure_seed(InfrastructureKind::MiningSite),
+                infrastructure_seed(InfrastructureKind::EnergyProducer),
+                infrastructure_seed(InfrastructureKind::Datacenter),
+                infrastructure_seed(InfrastructureKind::RelayUplink),
+            ],
+            hostile_remnant: None,
+        };
+        let fourth_world = StartingLocation {
+            location_id: 4,
+            name: "Nadir".to_owned(),
+            kind: LocationKind::Moon,
+            resource_richness: ResourceRichness::Moderate,
+            energy_potential: EnergyPotential::Moderate,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Peripheral,
+            territory: TerritoryState::Owned,
+            controller: Some(PlayerId::new(1)),
+            homeworld_of: None,
+            relay_status: RelayStatus::Connected,
+            orbital_slots: 1,
+            has_environmental_hazard: false,
+            starting_infrastructure: vec![
+                infrastructure_seed(InfrastructureKind::MiningSite),
+                infrastructure_seed(InfrastructureKind::EnergyProducer),
+                infrastructure_seed(InfrastructureKind::Datacenter),
+                infrastructure_seed(InfrastructureKind::RelayUplink),
+            ],
+            hostile_remnant: None,
+        };
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld, second_world, third_world, fourth_world],
+            connections: vec![
+                LocationConnection {
+                    from_location_id: 1,
+                    to_location_id: 2,
+                    travel_time_ticks: 8,
+                },
+                LocationConnection {
+                    from_location_id: 1,
+                    to_location_id: 3,
+                    travel_time_ticks: 8,
+                },
+                LocationConnection {
+                    from_location_id: 1,
+                    to_location_id: 4,
+                    travel_time_ticks: 8,
+                },
+            ],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
     #[test]
     fn new_session_starts_at_tick_zero() {
         let session = GameSession::new(
@@ -1541,6 +1656,178 @@ mod tests {
                 .iter()
                 .any(|event| matches!(&event.kind, EventKind::ThroughputBudgetSet { .. }))
         );
+    }
+
+    #[test]
+    fn claim_transit_turns_surveyed_neutral_world_into_owned_colony() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            claim_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(12);
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchClaimTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("claim transit should be accepted");
+        session.advance_ticks(12);
+
+        let claimed = session
+            .state()
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("claimed location should exist");
+        assert_eq!(claimed.territory, TerritoryState::Owned);
+        assert_eq!(claimed.controller, Some(PlayerId::new(1)));
+        assert!(
+            claimed
+                .infrastructure
+                .iter()
+                .any(|infrastructure| infrastructure.kind == InfrastructureKind::CommandNexus)
+        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::LocationClaimed {
+                location_id: 2,
+                player_id,
+            } if *player_id == PlayerId::new(1)
+        )));
+    }
+
+    #[test]
+    fn pacification_clears_remnants_before_claiming() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            remnant_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(12);
+
+        assert!(
+            session
+                .issue_command_now(
+                    PlayerId::new(1),
+                    CommandKind::DispatchClaimTransit {
+                        origin_location_id: 1,
+                        destination_location_id: 2,
+                    },
+                )
+                .is_err(),
+            "claiming with active remnants should fail"
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchPacificationTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("pacification transit should be accepted");
+        session.advance_ticks(12);
+
+        let target = session
+            .state()
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("target location should exist");
+        assert!(target.hostile_remnant.is_none());
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::HostileRemnantCleared { location_id: 2 }
+        )));
+    }
+
+    #[test]
+    fn training_runs_advance_model_tier_and_end_in_victory() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ascension_fixture_scenario(),
+        );
+
+        for target_tier in 2..=5 {
+            let training_requirement = match target_tier {
+                2 => 20,
+                3 => 35,
+                4 => 50,
+                5 => 70,
+                _ => unreachable!(),
+            };
+
+            session
+                .issue_command_now(
+                    PlayerId::new(1),
+                    CommandKind::SetThroughputBudget {
+                        reserved_for_model_upkeep: 0,
+                        reserved_for_training: training_requirement,
+                        reserved_for_agents: 0,
+                    },
+                )
+                .expect("budget update should be accepted");
+            session
+                .issue_command_now(
+                    PlayerId::new(1),
+                    CommandKind::StartTrainingRun { target_tier },
+                )
+                .expect("training run should be accepted");
+
+            let duration = match target_tier {
+                2 => 8,
+                3 => 12,
+                4 => 16,
+                5 => 20,
+                _ => unreachable!(),
+            };
+            session.advance_ticks(duration);
+        }
+
+        let player = session
+            .state()
+            .players
+            .iter()
+            .find(|player| player.player_id == PlayerId::new(1))
+            .expect("player should exist");
+        assert_eq!(player.model_tier, 5);
+        assert_eq!(
+            session.state().victory,
+            crate::VictoryState::Won {
+                winner: PlayerId::new(1)
+            }
+        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::VictoryDeclared { winner, .. } if *winner == PlayerId::new(1)
+        )));
     }
 
     #[test]

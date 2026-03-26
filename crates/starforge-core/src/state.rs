@@ -247,6 +247,7 @@ impl GameState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerState {
     pub player_id: PlayerId,
+    pub model_tier: u8,
     pub economy: PlayerEconomyState,
     pub throughput: ThroughputBudget,
     pub visibility: VisibilityState,
@@ -259,6 +260,7 @@ impl PlayerState {
     pub fn new(player_id: PlayerId) -> Self {
         Self {
             player_id,
+            model_tier: 1,
             economy: PlayerEconomyState::default(),
             throughput: ThroughputBudget::default(),
             visibility: VisibilityState::default(),
@@ -380,8 +382,10 @@ impl VisibilityState {
 pub struct PlayerStateView {
     pub tick_id: TickId,
     pub player_id: PlayerId,
+    pub model_tier: u8,
     pub economy: PlayerEconomyState,
     pub throughput: ThroughputBudget,
+    pub training: Option<TrainingRunState>,
     pub visibility: VisibilityState,
     pub locations: Vec<LocationView>,
     pub transits: Vec<TransitView>,
@@ -428,6 +432,8 @@ pub struct TransitView {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TransitKind {
     Survey,
+    Pacification,
+    Claim,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -440,8 +446,10 @@ pub struct ThroughputBudget {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrainingRunState {
-    pub tier_name: String,
-    pub progress_ticks: u64,
+    pub target_tier: u8,
+    pub progress_ticks: u32,
+    pub required_ticks: u32,
+    pub required_training_throughput: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

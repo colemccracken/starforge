@@ -97,4 +97,23 @@ pub enum EventKind {
     LocationSurveyed {
         location_id: u32,
     },
+    HostileRemnantCleared {
+        location_id: u32,
+    },
+    LocationClaimed {
+        location_id: u32,
+        player_id: PlayerId,
+    },
+    TrainingRunStarted {
+        target_tier: u8,
+        required_training_throughput: u32,
+        required_ticks: u32,
+    },
+    TrainingRunCompleted {
+        achieved_tier: u8,
+    },
+    VictoryDeclared {
+        winner: PlayerId,
+        reason: String,
+    },
 }

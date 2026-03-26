@@ -45,8 +45,19 @@ pub enum CommandKind {
         origin_location_id: u32,
         destination_location_id: u32,
     },
+    DispatchPacificationTransit {
+        origin_location_id: u32,
+        destination_location_id: u32,
+    },
+    DispatchClaimTransit {
+        origin_location_id: u32,
+        destination_location_id: u32,
+    },
     SurveyLocation {
         location_id: u32,
+    },
+    StartTrainingRun {
+        target_tier: u8,
     },
 }
 
