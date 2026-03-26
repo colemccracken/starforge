@@ -229,13 +229,11 @@ impl GameSession {
                 reserved_for_model_upkeep,
                 reserved_for_training,
                 reserved_for_agents,
-                available,
             } => self.apply_set_throughput_budget(
                 player_id,
                 reserved_for_model_upkeep,
                 reserved_for_training,
                 reserved_for_agents,
-                available,
             ),
             CommandKind::AssignAgent {
                 role,
@@ -288,29 +286,27 @@ impl GameSession {
         reserved_for_model_upkeep: u32,
         reserved_for_training: u32,
         reserved_for_agents: u32,
-        available: u32,
     ) -> Result<Vec<EventKind>, ValidationError> {
         let player = self.player_state_mut(player_id)?;
         let total_reserved =
             reserved_for_model_upkeep + reserved_for_training + reserved_for_agents;
 
-        if total_reserved > available {
+        if total_reserved > player.economy.usable_throughput {
             return Err(ValidationError {
                 code: "throughput_overallocated".to_owned(),
-                message: "reserved throughput cannot exceed available throughput".to_owned(),
+                message: "reserved throughput cannot exceed computed usable throughput".to_owned(),
             });
         }
 
         player.throughput.reserved_for_model_upkeep = reserved_for_model_upkeep;
         player.throughput.reserved_for_training = reserved_for_training;
         player.throughput.reserved_for_agents = reserved_for_agents;
-        player.throughput.available = available;
 
         Ok(vec![EventKind::ThroughputBudgetSet {
             reserved_for_model_upkeep,
             reserved_for_training,
             reserved_for_agents,
-            available,
+            available: player.throughput.available,
         }])
     }
 
@@ -381,12 +377,14 @@ impl GameSession {
             relay_status: RelayStatus::default(),
             orbital_slots: 1,
             has_environmental_hazard: false,
-            starting_infrastructure: Vec::new(),
+            infrastructure: Vec::new(),
+            economy: Default::default(),
             hostile_remnant: None,
         });
         self.state
             .locations
             .sort_by_key(|location| location.location_id);
+        self.state.recompute_economy();
 
         Ok(vec![EventKind::LocationRegistered { location_id, name }])
     }
@@ -398,11 +396,15 @@ impl GameSession {
     ) -> Result<Vec<EventKind>, ValidationError> {
         let location = self.location_state_mut(location_id)?;
         location.relay_status = relay_status.clone();
+        self.state.recompute_economy();
 
-        Ok(vec![EventKind::RelayStatusChanged {
+        let mut events = vec![EventKind::RelayStatusChanged {
             location_id,
             relay_status,
-        }])
+        }];
+        events.extend(self.economy_updated_events());
+
+        Ok(events)
     }
 
     fn player_state_mut(
@@ -433,6 +435,21 @@ impl GameSession {
                 message: "command references a location that does not exist in the session"
                     .to_owned(),
             })
+    }
+
+    fn economy_updated_events(&self) -> Vec<EventKind> {
+        self.state
+            .players
+            .iter()
+            .map(|player| EventKind::EconomyUpdated {
+                player_id: player.player_id,
+                total_connected_energy: player.economy.total_connected_energy,
+                total_connected_datacenter_capacity: player
+                    .economy
+                    .total_connected_datacenter_capacity,
+                usable_throughput: player.economy.usable_throughput,
+            })
+            .collect()
     }
 }
 

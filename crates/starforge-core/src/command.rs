@@ -19,7 +19,6 @@ pub enum CommandKind {
         reserved_for_model_upkeep: u32,
         reserved_for_training: u32,
         reserved_for_agents: u32,
-        available: u32,
     },
     AssignAgent {
         role: String,

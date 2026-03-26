@@ -16,9 +16,11 @@ pub use session::GameSession;
 pub use snapshot::Snapshot;
 pub use state::{
     AgentAssignment, BuildCapacity, CommandCollapseState, EnergyPotential, GameState,
-    HostileRemnantKind, HostileRemnantSeed, InfrastructureKind, InfrastructureSeed, LocationKind,
-    LocationState, PlayerState, RelayStatus, ResourceRichness, StrategicPosition, TerritoryState,
-    ThreatLevel, ThroughputBudget, TrainingRunState, TransitState, VictoryState, VisibilityState,
+    HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition, InfrastructureKind,
+    InfrastructureSeed, InfrastructureState, LocationEconomyState, LocationKind, LocationState,
+    PlayerEconomyState, PlayerState, RelayStatus, ResourceRichness, StrategicPosition,
+    TerritoryState, ThreatLevel, ThroughputBudget, TrainingRunState, TransitState, VictoryState,
+    VisibilityState,
 };
 
 #[cfg(test)]
@@ -30,6 +32,72 @@ mod tests {
         ResourceRichness, ScenarioConfig, SessionId, StartingLocation, StrategicPosition,
         TerritoryState, ThreatLevel, TickId,
     };
+
+    fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
+        InfrastructureSeed {
+            kind,
+            tier: 1,
+            starts_online: true,
+            starts_damaged: false,
+        }
+    }
+
+    fn compute_homeworld(
+        player_id: PlayerId,
+        location_id: u32,
+        name: &str,
+        energy_potential: EnergyPotential,
+        build_capacity: BuildCapacity,
+    ) -> StartingLocation {
+        StartingLocation {
+            location_id,
+            name: name.to_owned(),
+            kind: LocationKind::HabitablePlanet,
+            resource_richness: ResourceRichness::Rich,
+            energy_potential,
+            build_capacity,
+            strategic_position: StrategicPosition::Balanced,
+            territory: TerritoryState::Owned,
+            controller: Some(player_id),
+            homeworld_of: Some(player_id),
+            relay_status: RelayStatus::Connected,
+            orbital_slots: 3,
+            has_environmental_hazard: false,
+            starting_infrastructure: vec![
+                infrastructure_seed(InfrastructureKind::CommandNexus),
+                infrastructure_seed(InfrastructureKind::EnergyProducer),
+                infrastructure_seed(InfrastructureKind::Datacenter),
+                infrastructure_seed(InfrastructureKind::RelayUplink),
+            ],
+            hostile_remnant: None,
+        }
+    }
+
+    fn economy_fixture_scenario() -> ScenarioConfig {
+        ScenarioConfig {
+            starting_locations: vec![compute_homeworld(
+                PlayerId::new(1),
+                1,
+                "Helios",
+                EnergyPotential::High,
+                BuildCapacity::Expansive,
+            )],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn power_limited_scenario() -> ScenarioConfig {
+        ScenarioConfig {
+            starting_locations: vec![compute_homeworld(
+                PlayerId::new(1),
+                1,
+                "Helios",
+                EnergyPotential::Low,
+                BuildCapacity::Expansive,
+            )],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
 
     #[test]
     fn new_session_starts_at_tick_zero() {
@@ -49,57 +117,27 @@ mod tests {
             GameConfig::default(),
             ScenarioConfig {
                 starting_locations: vec![
-                    StartingLocation {
-                        location_id: 1,
-                        name: "Helios".to_owned(),
-                        kind: LocationKind::HabitablePlanet,
-                        resource_richness: ResourceRichness::Rich,
-                        energy_potential: EnergyPotential::High,
-                        build_capacity: BuildCapacity::Expansive,
-                        strategic_position: StrategicPosition::Balanced,
-                        territory: TerritoryState::Owned,
-                        controller: Some(PlayerId::new(1)),
-                        homeworld_of: Some(PlayerId::new(1)),
-                        relay_status: RelayStatus::Connected,
-                        orbital_slots: 3,
-                        has_environmental_hazard: false,
-                        starting_infrastructure: vec![InfrastructureSeed {
-                            kind: InfrastructureKind::CommandNexus,
-                            tier: 1,
-                            starts_online: true,
-                            starts_damaged: false,
-                        }],
-                        hostile_remnant: None,
-                    },
-                    StartingLocation {
-                        location_id: 2,
-                        name: "Selene".to_owned(),
-                        kind: LocationKind::HabitablePlanet,
-                        resource_richness: ResourceRichness::Rich,
-                        energy_potential: EnergyPotential::High,
-                        build_capacity: BuildCapacity::Expansive,
-                        strategic_position: StrategicPosition::Balanced,
-                        territory: TerritoryState::Owned,
-                        controller: Some(PlayerId::new(2)),
-                        homeworld_of: Some(PlayerId::new(2)),
-                        relay_status: RelayStatus::Connected,
-                        orbital_slots: 3,
-                        has_environmental_hazard: false,
-                        starting_infrastructure: vec![InfrastructureSeed {
-                            kind: InfrastructureKind::CommandNexus,
-                            tier: 1,
-                            starts_online: true,
-                            starts_damaged: false,
-                        }],
-                        hostile_remnant: None,
-                    },
+                    compute_homeworld(
+                        PlayerId::new(1),
+                        1,
+                        "Helios",
+                        EnergyPotential::High,
+                        BuildCapacity::Expansive,
+                    ),
+                    compute_homeworld(
+                        PlayerId::new(2),
+                        2,
+                        "Selene",
+                        EnergyPotential::High,
+                        BuildCapacity::Expansive,
+                    ),
                 ],
                 connections: vec![LocationConnection {
                     from_location_id: 1,
                     to_location_id: 2,
                     travel_time_ticks: 45,
                 }],
-                ..ScenarioConfig::default()
+                ..ScenarioConfig::test_fixture()
             },
         );
 
@@ -111,9 +149,10 @@ mod tests {
             ResourceRichness::Rich
         );
         assert_eq!(
-            session.state().locations[0].starting_infrastructure[0].kind,
+            session.state().locations[0].infrastructure[0].kind,
             InfrastructureKind::CommandNexus
         );
+        assert_eq!(session.state().players[0].economy.usable_throughput, 50);
         assert_eq!(
             session.state().locations[0].homeworld_of,
             Some(PlayerId::new(1))
@@ -162,7 +201,7 @@ mod tests {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
-            ScenarioConfig::default(),
+            economy_fixture_scenario(),
         );
 
         let command = CommandEnvelope {
@@ -174,7 +213,6 @@ mod tests {
                 reserved_for_model_upkeep: 10,
                 reserved_for_training: 20,
                 reserved_for_agents: 5,
-                available: 50,
             },
         };
 
@@ -207,7 +245,7 @@ mod tests {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
-            ScenarioConfig::default(),
+            economy_fixture_scenario(),
         );
 
         let command = CommandEnvelope {
@@ -219,7 +257,6 @@ mod tests {
                 reserved_for_model_upkeep: 20,
                 reserved_for_training: 20,
                 reserved_for_agents: 20,
-                available: 50,
             },
         };
 
@@ -228,7 +265,7 @@ mod tests {
             .expect("command should be accepted for deterministic apply-time validation");
 
         let player = &session.state().players[0];
-        assert_eq!(player.throughput.available, 0);
+        assert_eq!(player.throughput.available, 50);
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
             EventKind::CommandRejected { error, .. }
@@ -241,7 +278,7 @@ mod tests {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
-            ScenarioConfig::default(),
+            economy_fixture_scenario(),
         );
 
         session
@@ -254,7 +291,6 @@ mod tests {
                     reserved_for_model_upkeep: 10,
                     reserved_for_training: 5,
                     reserved_for_agents: 0,
-                    available: 40,
                 },
             })
             .expect("throughput setup should be accepted");
@@ -290,7 +326,7 @@ mod tests {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
-            ScenarioConfig::default(),
+            power_limited_scenario(),
         );
 
         let command = CommandEnvelope {
@@ -302,7 +338,6 @@ mod tests {
                 reserved_for_model_upkeep: 8,
                 reserved_for_training: 3,
                 reserved_for_agents: 0,
-                available: 20,
             },
         };
 
@@ -355,7 +390,7 @@ mod tests {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
-            ScenarioConfig::default(),
+            economy_fixture_scenario(),
         );
 
         let command = CommandEnvelope {
@@ -367,7 +402,6 @@ mod tests {
                 reserved_for_model_upkeep: 7,
                 reserved_for_training: 4,
                 reserved_for_agents: 0,
-                available: 25,
             },
         };
 
@@ -386,7 +420,7 @@ mod tests {
         restored.advance_tick();
 
         assert_eq!(restored.pending_commands().len(), 0);
-        assert_eq!(restored.state().players[0].throughput.available, 25);
+        assert_eq!(restored.state().players[0].throughput.available, 50);
         assert!(restored.event_log().iter().any(|event| matches!(
             &event.kind,
             EventKind::CommandApplied {
@@ -461,7 +495,7 @@ mod tests {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
-            ScenarioConfig::default(),
+            economy_fixture_scenario(),
         );
 
         let command = CommandEnvelope {
@@ -473,7 +507,6 @@ mod tests {
                 reserved_for_model_upkeep: 11,
                 reserved_for_training: 9,
                 reserved_for_agents: 0,
-                available: 32,
             },
         };
 
@@ -498,7 +531,7 @@ mod tests {
         let mut advanced = restored;
         advanced.advance_tick();
         advanced.advance_tick();
-        assert_eq!(advanced.state().players[0].throughput.available, 32);
+        assert_eq!(advanced.state().players[0].throughput.available, 50);
     }
 
     #[test]
@@ -624,7 +657,7 @@ mod tests {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
-            ScenarioConfig::default(),
+            economy_fixture_scenario(),
         );
 
         session
@@ -633,21 +666,8 @@ mod tests {
                 player_id: PlayerId::new(1),
                 issued_at_tick: TickId::default(),
                 apply_at_tick: TickId::default(),
-                command: CommandKind::RegisterLocation {
-                    location_id: 12,
-                    name: "Forward Outpost".to_owned(),
-                },
-            })
-            .expect("location registration should be accepted");
-
-        session
-            .accept_command(CommandEnvelope {
-                session_id: SessionId::new(1),
-                player_id: PlayerId::new(1),
-                issued_at_tick: TickId::default(),
-                apply_at_tick: TickId::default(),
                 command: CommandKind::SetRelayStatus {
-                    location_id: 12,
+                    location_id: 1,
                     relay_status: RelayStatus::Disconnected,
                 },
             })
@@ -657,13 +677,65 @@ mod tests {
             session.state().locations[0].relay_status,
             RelayStatus::Disconnected
         );
+        assert_eq!(session.state().players[0].throughput.available, 0);
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
             EventKind::RelayStatusChanged {
-                location_id: 12,
+                location_id: 1,
                 relay_status: RelayStatus::Disconnected,
             }
         )));
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::EconomyUpdated {
+                player_id,
+                usable_throughput,
+                ..
+            } if *player_id == PlayerId::new(1) && *usable_throughput == 0
+        )));
+    }
+
+    #[test]
+    fn initial_economy_is_derived_from_seeded_infrastructure() {
+        let session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            economy_fixture_scenario(),
+        );
+
+        assert_eq!(
+            session.state().players[0].economy.total_connected_energy,
+            60
+        );
+        assert_eq!(
+            session.state().players[0]
+                .economy
+                .total_connected_datacenter_capacity,
+            50
+        );
+        assert_eq!(session.state().players[0].economy.usable_throughput, 50);
+        assert_eq!(session.state().players[0].throughput.available, 50);
+        assert_eq!(
+            session.state().locations[0].economy.local_usable_throughput,
+            50
+        );
+    }
+
+    #[test]
+    fn power_shortfall_limits_computed_throughput() {
+        let session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            power_limited_scenario(),
+        );
+
+        assert_eq!(session.state().locations[0].economy.generated_energy, 20);
+        assert_eq!(session.state().locations[0].economy.datacenter_capacity, 50);
+        assert_eq!(
+            session.state().locations[0].economy.local_usable_throughput,
+            20
+        );
+        assert_eq!(session.state().players[0].throughput.available, 20);
     }
 
     #[test]

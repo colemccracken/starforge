@@ -35,6 +35,12 @@ pub enum EventKind {
         reserved_for_agents: u32,
         available: u32,
     },
+    EconomyUpdated {
+        player_id: PlayerId,
+        total_connected_energy: u32,
+        total_connected_datacenter_capacity: u32,
+        usable_throughput: u32,
+    },
     AgentAssigned {
         role: String,
         scope: String,
