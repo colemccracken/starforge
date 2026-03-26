@@ -134,6 +134,7 @@ impl GameSession {
         });
 
         self.apply_due_commands();
+        self.state.advance_resource_extraction();
     }
 
     pub fn accept_command(&mut self, command: CommandEnvelope) -> Result<(), ValidationError> {
@@ -379,6 +380,7 @@ impl GameSession {
             has_environmental_hazard: false,
             infrastructure: Vec::new(),
             economy: Default::default(),
+            stockpiles: Default::default(),
             hostile_remnant: None,
         });
         self.state

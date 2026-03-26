@@ -85,10 +85,31 @@ impl GameState {
                     .iter()
                     .map(|location| location.economy.empire_usable_throughput)
                     .sum(),
+                connected_stockpiles: connected_owned_locations.iter().fold(
+                    ResourceStockpiles::default(),
+                    |mut total, location| {
+                        total.add_assign(&location.stockpiles);
+                        total
+                    },
+                ),
                 disconnected_owned_location_ids,
             };
             player.throughput.available = player.economy.usable_throughput;
         }
+    }
+
+    pub fn advance_resource_extraction(&mut self) {
+        for location in &mut self.locations {
+            if location.territory != TerritoryState::Owned || location.controller.is_none() {
+                continue;
+            }
+
+            location
+                .stockpiles
+                .add_assign(&location.economy.extraction_output);
+        }
+
+        self.recompute_economy();
     }
 }
 
@@ -134,11 +155,19 @@ pub struct LocationState {
     pub has_environmental_hazard: bool,
     pub infrastructure: Vec<InfrastructureState>,
     pub economy: LocationEconomyState,
+    pub stockpiles: ResourceStockpiles,
     pub hostile_remnant: Option<HostileRemnantSeed>,
 }
 
 impl From<StartingLocation> for LocationState {
     fn from(location: StartingLocation) -> Self {
+        let stockpiles = initial_stockpiles(&location);
+        let infrastructure = location
+            .starting_infrastructure
+            .into_iter()
+            .map(InfrastructureState::from)
+            .collect();
+
         Self {
             location_id: location.location_id,
             name: location.name,
@@ -153,12 +182,9 @@ impl From<StartingLocation> for LocationState {
             relay_status: location.relay_status,
             orbital_slots: location.orbital_slots,
             has_environmental_hazard: location.has_environmental_hazard,
-            infrastructure: location
-                .starting_infrastructure
-                .into_iter()
-                .map(InfrastructureState::from)
-                .collect(),
+            infrastructure,
             economy: LocationEconomyState::default(),
+            stockpiles,
             hostile_remnant: location.hostile_remnant,
         }
     }
@@ -245,6 +271,7 @@ pub struct PlayerEconomyState {
     pub total_connected_energy: u32,
     pub total_connected_datacenter_capacity: u32,
     pub usable_throughput: u32,
+    pub connected_stockpiles: ResourceStockpiles,
     pub disconnected_owned_location_ids: Vec<u32>,
 }
 
@@ -254,7 +281,23 @@ pub struct LocationEconomyState {
     pub datacenter_capacity: u32,
     pub local_usable_throughput: u32,
     pub empire_usable_throughput: u32,
+    pub extraction_output: ResourceStockpiles,
     pub connected_to_empire: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceStockpiles {
+    pub common_materials: u32,
+    pub volatiles: u32,
+    pub rare_materials: u32,
+}
+
+impl ResourceStockpiles {
+    pub fn add_assign(&mut self, other: &Self) {
+        self.common_materials = self.common_materials.saturating_add(other.common_materials);
+        self.volatiles = self.volatiles.saturating_add(other.volatiles);
+        self.rare_materials = self.rare_materials.saturating_add(other.rare_materials);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -383,6 +426,7 @@ fn compute_location_economy(location: &LocationState) -> LocationEconomyState {
         })
         .sum();
     let local_usable_throughput = generated_energy.min(datacenter_capacity);
+    let extraction_output = resource_extraction_output(location);
     let connected_to_empire = location.relay_status == RelayStatus::Connected
         && location.infrastructure.iter().any(|infrastructure| {
             infrastructure.kind == InfrastructureKind::RelayUplink
@@ -399,6 +443,7 @@ fn compute_location_economy(location: &LocationState) -> LocationEconomyState {
         datacenter_capacity,
         local_usable_throughput,
         empire_usable_throughput,
+        extraction_output,
         connected_to_empire,
     }
 }
@@ -458,5 +503,73 @@ const fn condition_modifier_percent(condition: &InfrastructureCondition) -> u32 
         InfrastructureCondition::Operational => 100,
         InfrastructureCondition::Degraded => 50,
         InfrastructureCondition::Offline => 0,
+    }
+}
+
+fn resource_extraction_output(location: &LocationState) -> ResourceStockpiles {
+    let extraction_sites = location
+        .infrastructure
+        .iter()
+        .filter(|infrastructure| infrastructure.kind == InfrastructureKind::MiningSite)
+        .count();
+    if extraction_sites == 0 {
+        return ResourceStockpiles::default();
+    }
+
+    let extraction_sites = u32::try_from(extraction_sites).expect("site count fits in u32");
+    let mut output = ResourceStockpiles {
+        common_materials: match location.resource_richness {
+            ResourceRichness::Sparse => 4_u32,
+            ResourceRichness::Moderate => 8_u32,
+            ResourceRichness::Rich => 12_u32,
+        }
+        .saturating_mul(extraction_sites),
+        volatiles: match location.energy_potential {
+            EnergyPotential::Low => 1_u32,
+            EnergyPotential::Moderate => 2_u32,
+            EnergyPotential::High => 3_u32,
+        }
+        .saturating_mul(extraction_sites),
+        rare_materials: match location.resource_richness {
+            ResourceRichness::Sparse => 0_u32,
+            ResourceRichness::Moderate => 1_u32,
+            ResourceRichness::Rich => 2_u32,
+        }
+        .saturating_mul(extraction_sites),
+    };
+
+    if location.has_environmental_hazard {
+        output.common_materials /= 2;
+        output.volatiles /= 2;
+    }
+
+    output
+}
+
+fn initial_stockpiles(location: &StartingLocation) -> ResourceStockpiles {
+    if location.homeworld_of.is_some() {
+        return ResourceStockpiles {
+            common_materials: 500,
+            volatiles: 120,
+            rare_materials: 60,
+        };
+    }
+
+    match location.resource_richness {
+        ResourceRichness::Sparse => ResourceStockpiles {
+            common_materials: 60,
+            volatiles: 10,
+            rare_materials: 0,
+        },
+        ResourceRichness::Moderate => ResourceStockpiles {
+            common_materials: 120,
+            volatiles: 20,
+            rare_materials: 10,
+        },
+        ResourceRichness::Rich => ResourceStockpiles {
+            common_materials: 180,
+            volatiles: 35,
+            rare_materials: 20,
+        },
     }
 }

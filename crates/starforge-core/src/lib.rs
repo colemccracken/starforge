@@ -18,9 +18,9 @@ pub use state::{
     AgentAssignment, BuildCapacity, CommandCollapseState, EnergyPotential, GameState,
     HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition, InfrastructureKind,
     InfrastructureSeed, InfrastructureState, LocationEconomyState, LocationKind, LocationState,
-    PlayerEconomyState, PlayerState, RelayStatus, ResourceRichness, StrategicPosition,
-    TerritoryState, ThreatLevel, ThroughputBudget, TrainingRunState, TransitState, VictoryState,
-    VisibilityState,
+    PlayerEconomyState, PlayerState, RelayStatus, ResourceRichness, ResourceStockpiles,
+    StrategicPosition, TerritoryState, ThreatLevel, ThroughputBudget, TrainingRunState,
+    TransitState, VictoryState, VisibilityState,
 };
 
 #[cfg(test)]
@@ -29,8 +29,8 @@ mod tests {
         BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, GameConfig,
         GameSession, HostileRemnantKind, HostileRemnantSeed, InfrastructureKind,
         InfrastructureSeed, LocationConnection, LocationKind, MatchSeed, PlayerId, RelayStatus,
-        ResourceRichness, ScenarioConfig, SessionId, StartingLocation, StrategicPosition,
-        TerritoryState, ThreatLevel, TickId,
+        ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, StartingLocation,
+        StrategicPosition, TerritoryState, ThreatLevel, TickId,
     };
 
     fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
@@ -95,6 +95,24 @@ mod tests {
                 EnergyPotential::Low,
                 BuildCapacity::Expansive,
             )],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn mining_fixture_scenario() -> ScenarioConfig {
+        let mut homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        homeworld
+            .starting_infrastructure
+            .push(infrastructure_seed(InfrastructureKind::MiningSite));
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld],
             ..ScenarioConfig::test_fixture()
         }
     }
@@ -716,6 +734,14 @@ mod tests {
         assert_eq!(session.state().players[0].economy.usable_throughput, 50);
         assert_eq!(session.state().players[0].throughput.available, 50);
         assert_eq!(
+            session.state().players[0].economy.connected_stockpiles,
+            ResourceStockpiles {
+                common_materials: 500,
+                volatiles: 120,
+                rare_materials: 60,
+            }
+        );
+        assert_eq!(
             session.state().locations[0].economy.local_usable_throughput,
             50
         );
@@ -736,6 +762,43 @@ mod tests {
             20
         );
         assert_eq!(session.state().players[0].throughput.available, 20);
+    }
+
+    #[test]
+    fn advancing_ticks_accumulates_resource_extraction_into_stockpiles() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            mining_fixture_scenario(),
+        );
+
+        assert_eq!(
+            session.state().locations[0].economy.extraction_output,
+            ResourceStockpiles {
+                common_materials: 12,
+                volatiles: 3,
+                rare_materials: 2,
+            }
+        );
+
+        session.advance_tick();
+
+        assert_eq!(
+            session.state().locations[0].stockpiles,
+            ResourceStockpiles {
+                common_materials: 512,
+                volatiles: 123,
+                rare_materials: 62,
+            }
+        );
+        assert_eq!(
+            session.state().players[0].economy.connected_stockpiles,
+            ResourceStockpiles {
+                common_materials: 512,
+                volatiles: 123,
+                rare_materials: 62,
+            }
+        );
     }
 
     #[test]
