@@ -18,9 +18,10 @@ pub use state::{
     AgentAssignment, BuildCapacity, CommandCollapseState, EnergyPotential, GameState,
     HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition, InfrastructureKind,
     InfrastructureProjectKind, InfrastructureProjectState, InfrastructureSeed, InfrastructureState,
-    LocationEconomyState, LocationKind, LocationState, PlayerEconomyState, PlayerState,
-    RelayStatus, ResourceRichness, ResourceStockpiles, StrategicPosition, TerritoryState,
-    ThreatLevel, ThroughputBudget, TrainingRunState, TransitState, VictoryState, VisibilityState,
+    LocationEconomyState, LocationKind, LocationState, LocationView, LocationVisibility,
+    PlayerEconomyState, PlayerState, PlayerStateView, RelayStatus, ResourceRichness,
+    ResourceStockpiles, StrategicPosition, TerritoryState, ThreatLevel, ThroughputBudget,
+    TrainingRunState, TransitState, VictoryState, VisibilityState,
 };
 
 #[cfg(test)]
@@ -28,9 +29,10 @@ mod tests {
     use crate::{
         BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, GameConfig,
         GameSession, HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition,
-        InfrastructureKind, InfrastructureSeed, LocationConnection, LocationKind, MatchSeed,
-        PlayerId, RelayStatus, ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId,
-        StartingLocation, StrategicPosition, TerritoryState, ThreatLevel, TickId,
+        InfrastructureKind, InfrastructureSeed, LocationConnection, LocationKind,
+        LocationVisibility, MatchSeed, PlayerId, RelayStatus, ResourceRichness, ResourceStockpiles,
+        ScenarioConfig, SessionId, StartingLocation, StrategicPosition, TerritoryState,
+        ThreatLevel, TickId,
     };
 
     fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
@@ -238,6 +240,43 @@ mod tests {
                 from_location_id: 1,
                 to_location_id: 2,
                 travel_time_ticks: 20,
+            }],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn survey_fixture_scenario() -> ScenarioConfig {
+        let homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        let neutral = StartingLocation {
+            location_id: 2,
+            name: "Survey Target".to_owned(),
+            kind: LocationKind::Moon,
+            resource_richness: ResourceRichness::Moderate,
+            energy_potential: EnergyPotential::Moderate,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Peripheral,
+            territory: TerritoryState::Neutral,
+            controller: None,
+            homeworld_of: None,
+            relay_status: RelayStatus::Disconnected,
+            orbital_slots: 1,
+            has_environmental_hazard: true,
+            starting_infrastructure: Vec::new(),
+            hostile_remnant: None,
+        };
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld, neutral],
+            connections: vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 12,
             }],
             ..ScenarioConfig::test_fixture()
         }
@@ -1252,6 +1291,108 @@ mod tests {
             .count();
         assert_eq!(remote_datacenter_count, 1);
         assert_eq!(session.state().players[0].throughput.available, 90);
+    }
+
+    #[test]
+    fn player_view_shows_owned_worlds_and_hides_unsurveyed_others() {
+        let session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig {
+                starting_locations: vec![
+                    compute_homeworld(
+                        PlayerId::new(1),
+                        1,
+                        "Helios",
+                        EnergyPotential::High,
+                        BuildCapacity::Expansive,
+                    ),
+                    compute_homeworld(
+                        PlayerId::new(2),
+                        2,
+                        "Selene",
+                        EnergyPotential::High,
+                        BuildCapacity::Expansive,
+                    ),
+                ],
+                ..ScenarioConfig::test_fixture()
+            },
+        );
+
+        let player_view = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should be available");
+
+        let owned = player_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 1)
+            .expect("owned location should be present");
+        let hidden = player_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("other location should be present");
+
+        assert_eq!(owned.visibility, LocationVisibility::Owned);
+        assert!(owned.infrastructure.is_some());
+        assert_eq!(hidden.visibility, LocationVisibility::Obscured);
+        assert!(hidden.kind.is_none());
+    }
+
+    #[test]
+    fn survey_command_reveals_location_then_intel_goes_stale() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            survey_fixture_scenario(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::SurveyLocation { location_id: 2 },
+            })
+            .expect("survey should be accepted");
+
+        let observed_view = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should be available");
+        let observed = observed_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("surveyed location should be present");
+
+        assert_eq!(observed.visibility, LocationVisibility::Observed);
+        assert_eq!(observed.kind, Some(LocationKind::Moon));
+        assert!(observed.infrastructure.is_some());
+        assert!(
+            session
+                .event_log()
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::LocationSurveyed { location_id: 2 }))
+        );
+
+        session.advance_tick();
+
+        let stale_view = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should be available");
+        let stale = stale_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("stale location should be present");
+
+        assert_eq!(stale.visibility, LocationVisibility::Surveyed);
+        assert_eq!(stale.territory, TerritoryState::Obscured);
+        assert!(stale.kind.is_some());
+        assert!(stale.infrastructure.is_none());
+        assert!(stale_view.visibility.stale_location_ids.contains(&2));
     }
 
     #[test]

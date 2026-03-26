@@ -82,4 +82,7 @@ pub enum EventKind {
         location_id: u32,
         kind: InfrastructureKind,
     },
+    LocationSurveyed {
+        location_id: u32,
+    },
 }

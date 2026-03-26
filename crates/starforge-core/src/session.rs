@@ -1,9 +1,9 @@
 use crate::{
     BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, EventRecord,
     GameConfig, GameState, InfrastructureCondition, InfrastructureKind, InfrastructureProjectKind,
-    InfrastructureProjectState, LocationKind, LocationState, PlayerId, RelayStatus, ReplayLog,
-    ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, Snapshot, StrategicPosition,
-    TerritoryState, ValidationError,
+    InfrastructureProjectState, LocationKind, LocationState, LocationView, LocationVisibility,
+    PlayerId, PlayerStateView, RelayStatus, ReplayLog, ResourceRichness, ResourceStockpiles,
+    ScenarioConfig, SessionId, Snapshot, StrategicPosition, TerritoryState, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +32,7 @@ impl GameSession {
             },
         }];
 
-        Self {
+        let mut session = Self {
             session_id,
             config,
             scenario,
@@ -40,7 +40,9 @@ impl GameSession {
             event_log,
             replay_log: ReplayLog::default(),
             pending_commands: Vec::new(),
-        }
+        };
+        session.refresh_visibility();
+        session
     }
 
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
@@ -193,6 +195,8 @@ impl GameSession {
                 });
             }
         }
+
+        self.refresh_visibility();
     }
 
     pub fn accept_command(&mut self, command: CommandEnvelope) -> Result<(), ValidationError> {
@@ -263,6 +267,25 @@ impl GameSession {
         self.snapshot().to_json()
     }
 
+    pub fn player_view(&self, player_id: PlayerId) -> Result<PlayerStateView, ValidationError> {
+        let player = self.player_state(player_id)?;
+        let locations = self
+            .state
+            .locations
+            .iter()
+            .map(|location| project_location_for_player(location, player_id, &player.visibility))
+            .collect();
+
+        Ok(PlayerStateView {
+            tick_id: self.state.tick_id,
+            player_id,
+            economy: player.economy.clone(),
+            throughput: player.throughput.clone(),
+            visibility: player.visibility.clone(),
+            locations,
+        })
+    }
+
     fn apply_due_commands(&mut self) {
         let pending_commands = std::mem::take(&mut self.pending_commands);
         let mut remaining_commands = Vec::with_capacity(pending_commands.len());
@@ -320,6 +343,9 @@ impl GameSession {
                 location_id,
                 infrastructure_kind,
             ),
+            CommandKind::SurveyLocation { location_id } => {
+                self.apply_survey_location(player_id, location_id)
+            }
         };
 
         match applied {
@@ -697,6 +723,42 @@ impl GameSession {
         }])
     }
 
+    fn apply_survey_location(
+        &mut self,
+        player_id: PlayerId,
+        location_id: u32,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        if !self
+            .state
+            .locations
+            .iter()
+            .any(|location| location.location_id == location_id)
+        {
+            return Err(ValidationError {
+                code: "unknown_location".to_owned(),
+                message: "survey command references a location that does not exist in the session"
+                    .to_owned(),
+            });
+        }
+
+        let player = self.player_state_mut(player_id)?;
+        player.visibility.mark_surveyed(location_id);
+
+        Ok(vec![EventKind::LocationSurveyed { location_id }])
+    }
+
+    fn player_state(&self, player_id: PlayerId) -> Result<&crate::PlayerState, ValidationError> {
+        self.state
+            .players
+            .iter()
+            .find(|player| player.player_id == player_id)
+            .ok_or(ValidationError {
+                code: "unknown_player".to_owned(),
+                message: "command references a player that does not exist in the session"
+                    .to_owned(),
+            })
+    }
+
     fn player_state_mut(
         &mut self,
         player_id: PlayerId,
@@ -710,6 +772,35 @@ impl GameSession {
                 message: "command references a player that does not exist in the session"
                     .to_owned(),
             })
+    }
+
+    fn refresh_visibility(&mut self) {
+        for player in &mut self.state.players {
+            let owned_location_ids: Vec<u32> = self
+                .state
+                .locations
+                .iter()
+                .filter(|location| {
+                    location.controller == Some(player.player_id)
+                        && location.territory == TerritoryState::Owned
+                })
+                .map(|location| location.location_id)
+                .collect();
+            let contested_location_ids: Vec<u32> = self
+                .state
+                .locations
+                .iter()
+                .filter(|location| {
+                    location.controller == Some(player.player_id)
+                        && location.territory == TerritoryState::Contested
+                })
+                .map(|location| location.location_id)
+                .collect();
+
+            player
+                .visibility
+                .refresh_owned_and_contested(&owned_location_ids, &contested_location_ids);
+        }
     }
 
     fn controlled_location_state(
@@ -847,6 +938,107 @@ fn stable_hash(bytes: &[u8]) -> u64 {
     }
 
     hash
+}
+
+fn project_location_for_player(
+    location: &LocationState,
+    player_id: PlayerId,
+    visibility: &crate::VisibilityState,
+) -> LocationView {
+    let is_owned =
+        location.controller == Some(player_id) && location.territory == TerritoryState::Owned;
+    let is_observed = visibility
+        .observed_location_ids
+        .contains(&location.location_id);
+    let is_surveyed = visibility
+        .surveyed_location_ids
+        .contains(&location.location_id);
+
+    if is_owned {
+        return LocationView {
+            location_id: location.location_id,
+            name: location.name.clone(),
+            visibility: LocationVisibility::Owned,
+            territory: location.territory.clone(),
+            controller: location.controller,
+            kind: Some(location.kind.clone()),
+            resource_richness: Some(location.resource_richness.clone()),
+            energy_potential: Some(location.energy_potential.clone()),
+            build_capacity: Some(location.build_capacity.clone()),
+            relay_status: Some(location.relay_status.clone()),
+            orbital_slots: Some(location.orbital_slots),
+            has_environmental_hazard: Some(location.has_environmental_hazard),
+            infrastructure: Some(location.infrastructure.clone()),
+            infrastructure_projects: Some(location.infrastructure_projects.clone()),
+            economy: Some(location.economy.clone()),
+            stockpiles: Some(location.stockpiles.clone()),
+            hostile_remnant_present: Some(location.hostile_remnant.is_some()),
+        };
+    }
+
+    if is_observed {
+        return LocationView {
+            location_id: location.location_id,
+            name: location.name.clone(),
+            visibility: LocationVisibility::Observed,
+            territory: location.territory.clone(),
+            controller: location.controller,
+            kind: Some(location.kind.clone()),
+            resource_richness: Some(location.resource_richness.clone()),
+            energy_potential: Some(location.energy_potential.clone()),
+            build_capacity: Some(location.build_capacity.clone()),
+            relay_status: Some(location.relay_status.clone()),
+            orbital_slots: Some(location.orbital_slots),
+            has_environmental_hazard: Some(location.has_environmental_hazard),
+            infrastructure: Some(location.infrastructure.clone()),
+            infrastructure_projects: Some(location.infrastructure_projects.clone()),
+            economy: Some(location.economy.clone()),
+            stockpiles: None,
+            hostile_remnant_present: Some(location.hostile_remnant.is_some()),
+        };
+    }
+
+    if is_surveyed {
+        return LocationView {
+            location_id: location.location_id,
+            name: location.name.clone(),
+            visibility: LocationVisibility::Surveyed,
+            territory: TerritoryState::Obscured,
+            controller: None,
+            kind: Some(location.kind.clone()),
+            resource_richness: Some(location.resource_richness.clone()),
+            energy_potential: Some(location.energy_potential.clone()),
+            build_capacity: Some(location.build_capacity.clone()),
+            relay_status: None,
+            orbital_slots: Some(location.orbital_slots),
+            has_environmental_hazard: Some(location.has_environmental_hazard),
+            infrastructure: None,
+            infrastructure_projects: None,
+            economy: None,
+            stockpiles: None,
+            hostile_remnant_present: Some(location.hostile_remnant.is_some()),
+        };
+    }
+
+    LocationView {
+        location_id: location.location_id,
+        name: location.name.clone(),
+        visibility: LocationVisibility::Obscured,
+        territory: TerritoryState::Obscured,
+        controller: None,
+        kind: None,
+        resource_richness: None,
+        energy_potential: None,
+        build_capacity: None,
+        relay_status: None,
+        orbital_slots: None,
+        has_environmental_hazard: None,
+        infrastructure: None,
+        infrastructure_projects: None,
+        economy: None,
+        stockpiles: None,
+        hostile_remnant_present: None,
+    }
 }
 
 fn repair_cost(

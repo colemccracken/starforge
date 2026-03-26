@@ -308,8 +308,84 @@ pub struct TransitState {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VisibilityState {
+    pub surveyed_location_ids: Vec<u32>,
     pub observed_location_ids: Vec<u32>,
+    pub stale_location_ids: Vec<u32>,
     pub contested_location_ids: Vec<u32>,
+}
+
+impl VisibilityState {
+    pub fn mark_surveyed(&mut self, location_id: u32) {
+        push_unique_sorted(&mut self.surveyed_location_ids, location_id);
+        push_unique_sorted(&mut self.observed_location_ids, location_id);
+        self.stale_location_ids
+            .retain(|known_id| *known_id != location_id);
+    }
+
+    pub fn refresh_owned_and_contested(
+        &mut self,
+        owned_location_ids: &[u32],
+        contested_location_ids: &[u32],
+    ) {
+        let mut observed_location_ids = owned_location_ids.to_vec();
+        observed_location_ids.extend(contested_location_ids.iter().copied());
+        observed_location_ids.sort_unstable();
+        observed_location_ids.dedup();
+
+        for location_id in &observed_location_ids {
+            push_unique_sorted(&mut self.surveyed_location_ids, *location_id);
+        }
+
+        self.observed_location_ids = observed_location_ids;
+        self.contested_location_ids = contested_location_ids.to_vec();
+        self.contested_location_ids.sort_unstable();
+        self.contested_location_ids.dedup();
+        self.stale_location_ids = self
+            .surveyed_location_ids
+            .iter()
+            .copied()
+            .filter(|location_id| !self.observed_location_ids.contains(location_id))
+            .collect();
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerStateView {
+    pub tick_id: TickId,
+    pub player_id: PlayerId,
+    pub economy: PlayerEconomyState,
+    pub throughput: ThroughputBudget,
+    pub visibility: VisibilityState,
+    pub locations: Vec<LocationView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationView {
+    pub location_id: u32,
+    pub name: String,
+    pub visibility: LocationVisibility,
+    pub territory: TerritoryState,
+    pub controller: Option<PlayerId>,
+    pub kind: Option<LocationKind>,
+    pub resource_richness: Option<ResourceRichness>,
+    pub energy_potential: Option<EnergyPotential>,
+    pub build_capacity: Option<BuildCapacity>,
+    pub relay_status: Option<RelayStatus>,
+    pub orbital_slots: Option<u8>,
+    pub has_environmental_hazard: Option<bool>,
+    pub infrastructure: Option<Vec<InfrastructureState>>,
+    pub infrastructure_projects: Option<Vec<InfrastructureProjectState>>,
+    pub economy: Option<LocationEconomyState>,
+    pub stockpiles: Option<ResourceStockpiles>,
+    pub hostile_remnant_present: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LocationVisibility {
+    Owned,
+    Observed,
+    Surveyed,
+    Obscured,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -774,6 +850,13 @@ const fn extraction_rare_materials(resource_richness: ResourceRichness) -> u32 {
         ResourceRichness::Sparse => 0,
         ResourceRichness::Moderate => 1,
         ResourceRichness::Rich => 2,
+    }
+}
+
+fn push_unique_sorted(values: &mut Vec<u32>, value: u32) {
+    if !values.contains(&value) {
+        values.push(value);
+        values.sort_unstable();
     }
 }
 

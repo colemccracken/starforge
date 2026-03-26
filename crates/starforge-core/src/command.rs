@@ -41,6 +41,9 @@ pub enum CommandKind {
         location_id: u32,
         infrastructure_kind: InfrastructureKind,
     },
+    SurveyLocation {
+        location_id: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
