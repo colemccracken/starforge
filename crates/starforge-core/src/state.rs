@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{MatchSeed, PlayerId, TickId};
+use crate::{MatchSeed, PlayerId, StartingLocation, TickId};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameState {
@@ -13,12 +13,19 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub fn new(player_ids: Vec<PlayerId>, seed: MatchSeed) -> Self {
+    pub fn new(
+        player_ids: Vec<PlayerId>,
+        seed: MatchSeed,
+        starting_locations: Vec<StartingLocation>,
+    ) -> Self {
         Self {
             tick_id: TickId::default(),
             rng_state: seed.as_u64(),
             players: player_ids.into_iter().map(PlayerState::new).collect(),
-            locations: Vec::new(),
+            locations: starting_locations
+                .into_iter()
+                .map(LocationState::from)
+                .collect(),
             transits: Vec::new(),
             victory: VictoryState::Ongoing,
         }
@@ -62,7 +69,31 @@ impl PlayerState {
 pub struct LocationState {
     pub location_id: u32,
     pub name: String,
+    pub kind: LocationKind,
+    pub territory: TerritoryState,
+    pub controller: Option<PlayerId>,
+    pub homeworld_of: Option<PlayerId>,
     pub relay_status: RelayStatus,
+    pub orbital_slots: u8,
+    pub has_environmental_hazard: bool,
+    pub hostile_remnant_present: bool,
+}
+
+impl From<StartingLocation> for LocationState {
+    fn from(location: StartingLocation) -> Self {
+        Self {
+            location_id: location.location_id,
+            name: location.name,
+            kind: location.kind,
+            territory: location.territory,
+            controller: location.controller,
+            homeworld_of: location.homeworld_of,
+            relay_status: location.relay_status,
+            orbital_slots: location.orbital_slots,
+            has_environmental_hazard: location.has_environmental_hazard,
+            hostile_remnant_present: location.hostile_remnant_present,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +129,26 @@ pub struct AgentAssignment {
     pub role: String,
     pub scope: String,
     pub reserved_throughput: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum LocationKind {
+    HabitablePlanet,
+    BarrenWorld,
+    VolcanicWorld,
+    IceWorld,
+    Moon,
+    AsteroidCluster,
+    GasGiant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum TerritoryState {
+    Neutral,
+    Owned,
+    Contested,
+    Destroyed,
+    Obscured,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

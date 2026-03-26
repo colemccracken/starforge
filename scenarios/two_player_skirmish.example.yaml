@@ -3,4 +3,6 @@ ruleset: starter_skirmish
 seed: 42
 players:
   - id: 1
+    homeworld_name: Helios
   - id: 2
+    homeworld_name: Selene

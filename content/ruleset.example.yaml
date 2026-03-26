@@ -2,7 +2,13 @@ name: starter_skirmish
 version: 1
 players:
   max_players: 2
-economy:
-  starting_common_materials: 1000
-  starting_volatiles: 250
-  starting_rare_materials: 100
+world:
+  body_count_min: 18
+  body_count_max: 24
+  homeworld_orbital_slots: 3
+  neutral_orbital_slots_min: 1
+  neutral_orbital_slots_max: 4
+  hazardous_worlds_min: 2
+  hazardous_worlds_max: 5
+  hostile_remnant_worlds_min: 1
+  hostile_remnant_worlds_max: 3

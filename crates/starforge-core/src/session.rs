@@ -1,6 +1,7 @@
 use crate::{
-    CommandEnvelope, CommandKind, EventKind, EventRecord, GameConfig, GameState, LocationState,
-    PlayerId, RelayStatus, ReplayLog, ScenarioConfig, SessionId, Snapshot, ValidationError,
+    CommandEnvelope, CommandKind, EventKind, EventRecord, GameConfig, GameState, LocationKind,
+    LocationState, PlayerId, RelayStatus, ReplayLog, ScenarioConfig, SessionId, Snapshot,
+    TerritoryState, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +19,7 @@ impl GameSession {
     pub fn new(session_id: SessionId, config: GameConfig, scenario: ScenarioConfig) -> Self {
         let player_ids = scenario.player_ids.clone();
         let seed = scenario.seed;
+        let starting_locations = scenario.starting_locations.clone();
         let event_log = vec![EventRecord {
             tick_id: Default::default(),
             player_id: None,
@@ -31,7 +33,7 @@ impl GameSession {
             session_id,
             config,
             scenario,
-            state: GameState::new(player_ids, seed),
+            state: GameState::new(player_ids, seed, starting_locations),
             event_log,
             replay_log: ReplayLog::default(),
             pending_commands: Vec::new(),
@@ -366,7 +368,14 @@ impl GameSession {
         self.state.locations.push(LocationState {
             location_id,
             name: name.clone(),
+            kind: LocationKind::BarrenWorld,
+            territory: TerritoryState::Neutral,
+            controller: None,
+            homeworld_of: None,
             relay_status: RelayStatus::default(),
+            orbital_slots: 1,
+            has_environmental_hazard: false,
+            hostile_remnant_present: false,
         });
         self.state
             .locations

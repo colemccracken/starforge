@@ -4,14 +4,14 @@ Status: Active plan; Milestones 1-2 complete, Milestone 3 in progress
 Last Updated: 2026-03-25  
 Source of Truth: [STARFORGE_REFERENCE.md](STARFORGE_REFERENCE.md)  
 Current Milestone: World and content pipeline  
-Current Focus: Replace placeholder content parsing with typed ruleset and scenario loading, then use those inputs to start deterministic solar-system and homeworld initialization.
+Current Focus: Wire typed content files into scenario-loading workflows and continue enriching deterministic world generation beyond the first generated starting-location slice.
 
 ## Current Execution State
 
 - Current milestone: World and content pipeline
-- Current next action: Implement typed YAML ruleset and scenario documents in `starforge-content`, then compile them into deterministic session inputs for generated locations and hostile-remnant placeholders.
+- Current next action: Add file-backed scenario loading in `starforge-scenarios`, then expand generated location data with richer world attributes and stronger homeworld and hostile-remnant invariants.
 - Blockers: None currently identified.
-- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then completed the simulation-foundation milestone by implementing deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore and replay reconstruction support, added in-memory plus JSON snapshot round-trip tests, replaced the placeholder command path with deterministic throughput and agent-assignment mutations, added seeded RNG state with persistence and regression coverage in `starforge-core`, introduced structured command and domain event payloads, added deterministic location and relay mutations, and added a save/load continuation equivalence regression.
+- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then completed the simulation-foundation milestone by implementing deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore and replay reconstruction support, added in-memory plus JSON snapshot round-trip tests, replaced the placeholder command path with deterministic throughput and agent-assignment mutations, added seeded RNG state with persistence and regression coverage in `starforge-core`, introduced structured command and domain event payloads, added deterministic location and relay mutations, added a save/load continuation equivalence regression, replaced placeholder YAML parsing in `starforge-content` with typed ruleset and scenario documents, generated deterministic homeworld and neutral starting locations from content data, and wired `GameSession` bootstrap to honor generated starting locations from `ScenarioConfig`.
 
 ## Purpose
 
