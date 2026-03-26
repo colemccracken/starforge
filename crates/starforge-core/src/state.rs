@@ -100,7 +100,7 @@ pub struct AgentAssignment {
     pub reserved_throughput: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RelayStatus {
     #[default]
     Connected,

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{PlayerId, SessionId, TickId};
+use crate::{PlayerId, RelayStatus, SessionId, TickId};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CommandEnvelope {
@@ -26,10 +26,18 @@ pub enum CommandKind {
         scope: String,
         reserved_throughput: u32,
     },
+    RegisterLocation {
+        location_id: u32,
+        name: String,
+    },
+    SetRelayStatus {
+        location_id: u32,
+        relay_status: RelayStatus,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ValidationError {
-    pub code: &'static str,
+    pub code: String,
     pub message: String,
 }

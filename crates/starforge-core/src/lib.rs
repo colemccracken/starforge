@@ -23,7 +23,7 @@ pub use state::{
 mod tests {
     use crate::{
         CommandEnvelope, CommandKind, EventKind, GameConfig, GameSession, MatchSeed, PlayerId,
-        ScenarioConfig, SessionId, TickId,
+        RelayStatus, ScenarioConfig, SessionId, TickId,
     };
 
     #[test]
@@ -102,12 +102,21 @@ mod tests {
         let player = &session.state().players[0];
         assert_eq!(player.throughput.available, 50);
         assert_eq!(player.throughput.reserved_for_training, 20);
-        assert!(
-            session
-                .event_log()
-                .iter()
-                .any(|event| event.kind == EventKind::CommandApplied)
-        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::CommandApplied {
+                command: CommandKind::SetThroughputBudget { .. },
+            }
+        )));
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ThroughputBudgetSet {
+                reserved_for_model_upkeep: 10,
+                reserved_for_training: 20,
+                reserved_for_agents: 5,
+                available: 50,
+            }
+        )));
     }
 
     #[test]
@@ -137,12 +146,11 @@ mod tests {
 
         let player = &session.state().players[0];
         assert_eq!(player.throughput.available, 0);
-        assert!(
-            session
-                .event_log()
-                .iter()
-                .any(|event| event.kind == EventKind::CommandRejected)
-        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::CommandRejected { error, .. }
+                if error.code == "throughput_overallocated"
+        )));
     }
 
     #[test]
@@ -185,6 +193,13 @@ mod tests {
         let player = &session.state().players[0];
         assert_eq!(player.agents.len(), 1);
         assert_eq!(player.throughput.reserved_for_agents, 12);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::AgentAssigned {
+                reserved_throughput: 12,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -220,12 +235,12 @@ mod tests {
         assert_eq!(session.pending_commands().len(), 0);
         let player = &session.state().players[0];
         assert_eq!(player.throughput.available, 20);
-        assert!(
-            session
-                .event_log()
-                .iter()
-                .any(|event| event.kind == EventKind::CommandApplied)
-        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::CommandApplied {
+                command: CommandKind::SetThroughputBudget { .. },
+            }
+        )));
     }
 
     #[test]
@@ -289,12 +304,12 @@ mod tests {
 
         assert_eq!(restored.pending_commands().len(), 0);
         assert_eq!(restored.state().players[0].throughput.available, 25);
-        assert!(
-            restored
-                .event_log()
-                .iter()
-                .any(|event| event.kind == EventKind::CommandApplied)
-        );
+        assert!(restored.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::CommandApplied {
+                command: CommandKind::SetThroughputBudget { .. },
+            }
+        )));
     }
 
     #[test]
@@ -310,11 +325,9 @@ mod tests {
             player_id: PlayerId::new(1),
             issued_at_tick: TickId::default(),
             apply_at_tick: TickId::new(2),
-            command: CommandKind::SetThroughputBudget {
-                reserved_for_model_upkeep: 9,
-                reserved_for_training: 6,
-                reserved_for_agents: 0,
-                available: 30,
+            command: CommandKind::RegisterLocation {
+                location_id: 100,
+                name: "Outer Relay".to_owned(),
             },
         };
 
@@ -325,14 +338,12 @@ mod tests {
 
         let second_command = CommandEnvelope {
             session_id: SessionId::new(1),
-            player_id: PlayerId::new(2),
+            player_id: PlayerId::new(1),
             issued_at_tick: TickId::new(1),
-            apply_at_tick: TickId::new(1),
-            command: CommandKind::SetThroughputBudget {
-                reserved_for_model_upkeep: 5,
-                reserved_for_training: 3,
-                reserved_for_agents: 0,
-                available: 18,
+            apply_at_tick: TickId::new(2),
+            command: CommandKind::SetRelayStatus {
+                location_id: 100,
+                relay_status: RelayStatus::Disconnected,
             },
         };
 
@@ -358,14 +369,8 @@ mod tests {
             replayed.replay_log().accepted_commands.len(),
             session.replay_log().accepted_commands.len()
         );
-        assert_eq!(
-            replayed.state().players[0].throughput,
-            session.state().players[0].throughput
-        );
-        assert_eq!(
-            replayed.state().players[1].throughput,
-            session.state().players[1].throughput
-        );
+        assert_eq!(replayed.state().locations, session.state().locations);
+        assert_eq!(replayed.event_log(), session.event_log());
     }
 
     #[test]
@@ -411,6 +416,171 @@ mod tests {
         advanced.advance_tick();
         advanced.advance_tick();
         assert_eq!(advanced.state().players[0].throughput.available, 32);
+    }
+
+    #[test]
+    fn save_load_continuation_matches_uninterrupted_execution() {
+        let mut uninterrupted = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        uninterrupted
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::new(2),
+                command: CommandKind::RegisterLocation {
+                    location_id: 21,
+                    name: "Relay Bastion".to_owned(),
+                },
+            })
+            .expect("location registration should be accepted");
+        uninterrupted
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::new(3),
+                command: CommandKind::SetRelayStatus {
+                    location_id: 21,
+                    relay_status: RelayStatus::Disconnected,
+                },
+            })
+            .expect("relay update should be accepted");
+
+        uninterrupted.advance_tick();
+
+        let snapshot = uninterrupted
+            .snapshot_json()
+            .expect("snapshot should serialize");
+        let mut restored =
+            GameSession::from_snapshot_json(&snapshot).expect("snapshot should deserialize");
+
+        uninterrupted.advance_tick();
+        uninterrupted.advance_tick();
+        restored.advance_tick();
+        restored.advance_tick();
+
+        assert_eq!(restored.state_hash(), uninterrupted.state_hash());
+        assert_eq!(restored.event_log(), uninterrupted.event_log());
+        assert_eq!(
+            restored.pending_commands(),
+            uninterrupted.pending_commands()
+        );
+    }
+
+    #[test]
+    fn register_location_command_updates_state_and_emits_domain_event() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::RegisterLocation {
+                    location_id: 7,
+                    name: "Homeworld".to_owned(),
+                },
+            })
+            .expect("location registration should be accepted");
+
+        assert_eq!(session.state().locations.len(), 1);
+        assert_eq!(session.state().locations[0].location_id, 7);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::LocationRegistered { location_id, name }
+                if *location_id == 7 && name == "Homeworld"
+        )));
+    }
+
+    #[test]
+    fn duplicate_location_registration_is_rejected_deterministically() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        let command = CommandEnvelope {
+            session_id: SessionId::new(1),
+            player_id: PlayerId::new(1),
+            issued_at_tick: TickId::default(),
+            apply_at_tick: TickId::default(),
+            command: CommandKind::RegisterLocation {
+                location_id: 7,
+                name: "Homeworld".to_owned(),
+            },
+        };
+
+        session
+            .accept_command(command.clone())
+            .expect("first registration should succeed");
+        session
+            .accept_command(command)
+            .expect("duplicate registration should still be accepted for apply-time validation");
+
+        assert_eq!(session.state().locations.len(), 1);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::CommandRejected { error, .. }
+                if error.code == "duplicate_location"
+        )));
+    }
+
+    #[test]
+    fn relay_status_command_updates_location_state() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::RegisterLocation {
+                    location_id: 12,
+                    name: "Forward Outpost".to_owned(),
+                },
+            })
+            .expect("location registration should be accepted");
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::SetRelayStatus {
+                    location_id: 12,
+                    relay_status: RelayStatus::Disconnected,
+                },
+            })
+            .expect("relay status update should be accepted");
+
+        assert_eq!(
+            session.state().locations[0].relay_status,
+            RelayStatus::Disconnected
+        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::RelayStatusChanged {
+                location_id: 12,
+                relay_status: RelayStatus::Disconnected,
+            }
+        )));
     }
 
     #[test]

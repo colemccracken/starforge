@@ -1,6 +1,6 @@
 use crate::{
-    CommandEnvelope, EventKind, EventRecord, GameConfig, GameState, ReplayLog, ScenarioConfig,
-    SessionId, Snapshot, ValidationError,
+    CommandEnvelope, CommandKind, EventKind, EventRecord, GameConfig, GameState, LocationState,
+    PlayerId, RelayStatus, ReplayLog, ScenarioConfig, SessionId, Snapshot, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,7 +21,10 @@ impl GameSession {
         let event_log = vec![EventRecord {
             tick_id: Default::default(),
             player_id: None,
-            kind: EventKind::SessionCreated,
+            kind: EventKind::SessionCreated {
+                player_ids: player_ids.clone(),
+                seed,
+            },
         }];
 
         Self {
@@ -121,7 +124,9 @@ impl GameSession {
         self.event_log.push(EventRecord {
             tick_id: self.state.tick_id,
             player_id: None,
-            kind: EventKind::TickAdvanced,
+            kind: EventKind::TickAdvanced {
+                tick_id: self.state.tick_id,
+            },
         });
 
         self.apply_due_commands();
@@ -130,29 +135,36 @@ impl GameSession {
     pub fn accept_command(&mut self, command: CommandEnvelope) -> Result<(), ValidationError> {
         if command.session_id != self.session_id {
             return Err(ValidationError {
-                code: "session_mismatch",
+                code: "session_mismatch".to_owned(),
                 message: "command session does not match the target session".to_owned(),
             });
         }
 
         if command.apply_at_tick < self.state.tick_id {
+            let error = ValidationError {
+                code: "apply_in_past".to_owned(),
+                message: "command apply tick is in the past".to_owned(),
+            };
             self.event_log.push(EventRecord {
                 tick_id: self.state.tick_id,
                 player_id: Some(command.player_id),
-                kind: EventKind::CommandRejected,
+                kind: EventKind::CommandRejected {
+                    command: command.command,
+                    error: error.clone(),
+                },
             });
 
-            return Err(ValidationError {
-                code: "apply_in_past",
-                message: "command apply tick is in the past".to_owned(),
-            });
+            return Err(error);
         }
 
         self.replay_log.accepted_commands.push(command.clone());
         self.event_log.push(EventRecord {
             tick_id: self.state.tick_id,
             player_id: Some(command.player_id),
-            kind: EventKind::CommandAccepted,
+            kind: EventKind::CommandAccepted {
+                command: command.command.clone(),
+                apply_at_tick: command.apply_at_tick,
+            },
         });
 
         if command.apply_at_tick == self.state.tick_id {
@@ -205,10 +217,11 @@ impl GameSession {
 
     fn apply_command(&mut self, command: CommandEnvelope) {
         let player_id = command.player_id;
+        let command_kind = command.command;
 
-        let applied = match command.command {
-            crate::CommandKind::NoOp | crate::CommandKind::AdvanceTick => Ok(()),
-            crate::CommandKind::SetThroughputBudget {
+        let applied = match command_kind.clone() {
+            CommandKind::NoOp | CommandKind::AdvanceTick => Ok(Vec::new()),
+            CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep,
                 reserved_for_training,
                 reserved_for_agents,
@@ -220,41 +233,66 @@ impl GameSession {
                 reserved_for_agents,
                 available,
             ),
-            crate::CommandKind::AssignAgent {
+            CommandKind::AssignAgent {
                 role,
                 scope,
                 reserved_throughput,
             } => self.apply_assign_agent(player_id, role, scope, reserved_throughput),
+            CommandKind::RegisterLocation { location_id, name } => {
+                self.apply_register_location(location_id, name)
+            }
+            CommandKind::SetRelayStatus {
+                location_id,
+                relay_status,
+            } => self.apply_set_relay_status(location_id, relay_status),
         };
 
-        let event_kind = if applied.is_ok() {
-            EventKind::CommandApplied
-        } else {
-            EventKind::CommandRejected
-        };
+        match applied {
+            Ok(mut domain_events) => {
+                self.event_log.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: Some(player_id),
+                    kind: EventKind::CommandApplied {
+                        command: command_kind,
+                    },
+                });
 
-        self.event_log.push(EventRecord {
-            tick_id: self.state.tick_id,
-            player_id: Some(player_id),
-            kind: event_kind,
-        });
+                for kind in domain_events.drain(..) {
+                    self.event_log.push(EventRecord {
+                        tick_id: self.state.tick_id,
+                        player_id: Some(player_id),
+                        kind,
+                    });
+                }
+            }
+            Err(error) => {
+                self.event_log.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: Some(player_id),
+                    kind: EventKind::CommandRejected {
+                        command: command_kind,
+                        error,
+                    },
+                });
+            }
+        }
     }
 
     fn apply_set_throughput_budget(
         &mut self,
-        player_id: crate::PlayerId,
+        player_id: PlayerId,
         reserved_for_model_upkeep: u32,
         reserved_for_training: u32,
         reserved_for_agents: u32,
         available: u32,
-    ) -> Result<(), ValidationError> {
+    ) -> Result<Vec<EventKind>, ValidationError> {
         let player = self.player_state_mut(player_id)?;
         let total_reserved =
             reserved_for_model_upkeep + reserved_for_training + reserved_for_agents;
 
         if total_reserved > available {
             return Err(ValidationError {
-                code: "throughput_overallocated",
+                code: "throughput_overallocated".to_owned(),
                 message: "reserved throughput cannot exceed available throughput".to_owned(),
             });
         }
@@ -264,16 +302,21 @@ impl GameSession {
         player.throughput.reserved_for_agents = reserved_for_agents;
         player.throughput.available = available;
 
-        Ok(())
+        Ok(vec![EventKind::ThroughputBudgetSet {
+            reserved_for_model_upkeep,
+            reserved_for_training,
+            reserved_for_agents,
+            available,
+        }])
     }
 
     fn apply_assign_agent(
         &mut self,
-        player_id: crate::PlayerId,
+        player_id: PlayerId,
         role: String,
         scope: String,
         reserved_throughput: u32,
-    ) -> Result<(), ValidationError> {
+    ) -> Result<Vec<EventKind>, ValidationError> {
         let player = self.player_state_mut(player_id)?;
         let remaining_capacity = player
             .throughput
@@ -284,32 +327,94 @@ impl GameSession {
 
         if reserved_throughput > remaining_capacity {
             return Err(ValidationError {
-                code: "insufficient_throughput",
+                code: "insufficient_throughput".to_owned(),
                 message: "agent assignment exceeds remaining throughput capacity".to_owned(),
             });
         }
 
         player.agents.push(crate::AgentAssignment {
-            role,
-            scope,
+            role: role.clone(),
+            scope: scope.clone(),
             reserved_throughput,
         });
         player.throughput.reserved_for_agents += reserved_throughput;
 
-        Ok(())
+        Ok(vec![EventKind::AgentAssigned {
+            role,
+            scope,
+            reserved_throughput,
+        }])
+    }
+
+    fn apply_register_location(
+        &mut self,
+        location_id: u32,
+        name: String,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        if self
+            .state
+            .locations
+            .iter()
+            .any(|location| location.location_id == location_id)
+        {
+            return Err(ValidationError {
+                code: "duplicate_location".to_owned(),
+                message: "location id already exists in the session".to_owned(),
+            });
+        }
+
+        self.state.locations.push(LocationState {
+            location_id,
+            name: name.clone(),
+            relay_status: RelayStatus::default(),
+        });
+        self.state
+            .locations
+            .sort_by_key(|location| location.location_id);
+
+        Ok(vec![EventKind::LocationRegistered { location_id, name }])
+    }
+
+    fn apply_set_relay_status(
+        &mut self,
+        location_id: u32,
+        relay_status: RelayStatus,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        let location = self.location_state_mut(location_id)?;
+        location.relay_status = relay_status.clone();
+
+        Ok(vec![EventKind::RelayStatusChanged {
+            location_id,
+            relay_status,
+        }])
     }
 
     fn player_state_mut(
         &mut self,
-        player_id: crate::PlayerId,
+        player_id: PlayerId,
     ) -> Result<&mut crate::PlayerState, ValidationError> {
         self.state
             .players
             .iter_mut()
             .find(|player| player.player_id == player_id)
             .ok_or(ValidationError {
-                code: "unknown_player",
+                code: "unknown_player".to_owned(),
                 message: "command references a player that does not exist in the session"
+                    .to_owned(),
+            })
+    }
+
+    fn location_state_mut(
+        &mut self,
+        location_id: u32,
+    ) -> Result<&mut LocationState, ValidationError> {
+        self.state
+            .locations
+            .iter_mut()
+            .find(|location| location.location_id == location_id)
+            .ok_or(ValidationError {
+                code: "unknown_location".to_owned(),
+                message: "command references a location that does not exist in the session"
                     .to_owned(),
             })
     }

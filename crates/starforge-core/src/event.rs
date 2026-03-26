@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{PlayerId, TickId};
+use crate::{CommandKind, MatchSeed, PlayerId, RelayStatus, TickId, ValidationError};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventRecord {
@@ -11,9 +11,41 @@ pub struct EventRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
-    SessionCreated,
-    TickAdvanced,
-    CommandAccepted,
-    CommandApplied,
-    CommandRejected,
+    SessionCreated {
+        player_ids: Vec<PlayerId>,
+        seed: MatchSeed,
+    },
+    TickAdvanced {
+        tick_id: TickId,
+    },
+    CommandAccepted {
+        command: CommandKind,
+        apply_at_tick: TickId,
+    },
+    CommandApplied {
+        command: CommandKind,
+    },
+    CommandRejected {
+        command: CommandKind,
+        error: ValidationError,
+    },
+    ThroughputBudgetSet {
+        reserved_for_model_upkeep: u32,
+        reserved_for_training: u32,
+        reserved_for_agents: u32,
+        available: u32,
+    },
+    AgentAssigned {
+        role: String,
+        scope: String,
+        reserved_throughput: u32,
+    },
+    LocationRegistered {
+        location_id: u32,
+        name: String,
+    },
+    RelayStatusChanged {
+        location_id: u32,
+        relay_status: RelayStatus,
+    },
 }
