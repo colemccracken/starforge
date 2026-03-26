@@ -199,15 +199,114 @@ impl GameSession {
     }
 
     fn apply_command(&mut self, command: CommandEnvelope) {
-        match command.command {
-            crate::CommandKind::NoOp | crate::CommandKind::AdvanceTick => {}
-        }
+        let player_id = command.player_id;
+
+        let applied = match command.command {
+            crate::CommandKind::NoOp | crate::CommandKind::AdvanceTick => Ok(()),
+            crate::CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep,
+                reserved_for_training,
+                reserved_for_agents,
+                available,
+            } => self.apply_set_throughput_budget(
+                player_id,
+                reserved_for_model_upkeep,
+                reserved_for_training,
+                reserved_for_agents,
+                available,
+            ),
+            crate::CommandKind::AssignAgent {
+                role,
+                scope,
+                reserved_throughput,
+            } => self.apply_assign_agent(player_id, role, scope, reserved_throughput),
+        };
+
+        let event_kind = if applied.is_ok() {
+            EventKind::CommandApplied
+        } else {
+            EventKind::CommandRejected
+        };
 
         self.event_log.push(EventRecord {
             tick_id: self.state.tick_id,
-            player_id: Some(command.player_id),
-            kind: EventKind::CommandApplied,
+            player_id: Some(player_id),
+            kind: event_kind,
         });
+    }
+
+    fn apply_set_throughput_budget(
+        &mut self,
+        player_id: crate::PlayerId,
+        reserved_for_model_upkeep: u32,
+        reserved_for_training: u32,
+        reserved_for_agents: u32,
+        available: u32,
+    ) -> Result<(), ValidationError> {
+        let player = self.player_state_mut(player_id)?;
+        let total_reserved =
+            reserved_for_model_upkeep + reserved_for_training + reserved_for_agents;
+
+        if total_reserved > available {
+            return Err(ValidationError {
+                code: "throughput_overallocated",
+                message: "reserved throughput cannot exceed available throughput".to_owned(),
+            });
+        }
+
+        player.throughput.reserved_for_model_upkeep = reserved_for_model_upkeep;
+        player.throughput.reserved_for_training = reserved_for_training;
+        player.throughput.reserved_for_agents = reserved_for_agents;
+        player.throughput.available = available;
+
+        Ok(())
+    }
+
+    fn apply_assign_agent(
+        &mut self,
+        player_id: crate::PlayerId,
+        role: String,
+        scope: String,
+        reserved_throughput: u32,
+    ) -> Result<(), ValidationError> {
+        let player = self.player_state_mut(player_id)?;
+        let remaining_capacity = player
+            .throughput
+            .available
+            .saturating_sub(player.throughput.reserved_for_model_upkeep)
+            .saturating_sub(player.throughput.reserved_for_training)
+            .saturating_sub(player.throughput.reserved_for_agents);
+
+        if reserved_throughput > remaining_capacity {
+            return Err(ValidationError {
+                code: "insufficient_throughput",
+                message: "agent assignment exceeds remaining throughput capacity".to_owned(),
+            });
+        }
+
+        player.agents.push(crate::AgentAssignment {
+            role,
+            scope,
+            reserved_throughput,
+        });
+        player.throughput.reserved_for_agents += reserved_throughput;
+
+        Ok(())
+    }
+
+    fn player_state_mut(
+        &mut self,
+        player_id: crate::PlayerId,
+    ) -> Result<&mut crate::PlayerState, ValidationError> {
+        self.state
+            .players
+            .iter_mut()
+            .find(|player| player.player_id == player_id)
+            .ok_or(ValidationError {
+                code: "unknown_player",
+                message: "command references a player that does not exist in the session"
+                    .to_owned(),
+            })
     }
 }
 

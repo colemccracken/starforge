@@ -15,6 +15,17 @@ pub struct CommandEnvelope {
 pub enum CommandKind {
     NoOp,
     AdvanceTick,
+    SetThroughputBudget {
+        reserved_for_model_upkeep: u32,
+        reserved_for_training: u32,
+        reserved_for_agents: u32,
+        available: u32,
+    },
+    AssignAgent {
+        role: String,
+        scope: String,
+        reserved_throughput: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

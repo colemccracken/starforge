@@ -75,6 +75,119 @@ mod tests {
     }
 
     #[test]
+    fn throughput_budget_command_updates_player_state() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        let command = CommandEnvelope {
+            session_id: SessionId::new(1),
+            player_id: PlayerId::new(1),
+            issued_at_tick: TickId::default(),
+            apply_at_tick: TickId::default(),
+            command: CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: 10,
+                reserved_for_training: 20,
+                reserved_for_agents: 5,
+                available: 50,
+            },
+        };
+
+        session
+            .accept_command(command)
+            .expect("throughput command should be accepted");
+
+        let player = &session.state().players[0];
+        assert_eq!(player.throughput.available, 50);
+        assert_eq!(player.throughput.reserved_for_training, 20);
+        assert!(
+            session
+                .event_log()
+                .iter()
+                .any(|event| event.kind == EventKind::CommandApplied)
+        );
+    }
+
+    #[test]
+    fn invalid_throughput_budget_is_rejected_deterministically() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        let command = CommandEnvelope {
+            session_id: SessionId::new(1),
+            player_id: PlayerId::new(1),
+            issued_at_tick: TickId::default(),
+            apply_at_tick: TickId::default(),
+            command: CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: 20,
+                reserved_for_training: 20,
+                reserved_for_agents: 20,
+                available: 50,
+            },
+        };
+
+        session
+            .accept_command(command)
+            .expect("command should be accepted for deterministic apply-time validation");
+
+        let player = &session.state().players[0];
+        assert_eq!(player.throughput.available, 0);
+        assert!(
+            session
+                .event_log()
+                .iter()
+                .any(|event| event.kind == EventKind::CommandRejected)
+        );
+    }
+
+    #[test]
+    fn agent_assignment_consumes_available_throughput() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::SetThroughputBudget {
+                    reserved_for_model_upkeep: 10,
+                    reserved_for_training: 5,
+                    reserved_for_agents: 0,
+                    available: 40,
+                },
+            })
+            .expect("throughput setup should be accepted");
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::AssignAgent {
+                    role: "maintenance_overseer".to_owned(),
+                    scope: "homeworld".to_owned(),
+                    reserved_throughput: 12,
+                },
+            })
+            .expect("agent assignment should be accepted");
+
+        let player = &session.state().players[0];
+        assert_eq!(player.agents.len(), 1);
+        assert_eq!(player.throughput.reserved_for_agents, 12);
+    }
+
+    #[test]
     fn commands_scheduled_for_future_ticks_apply_when_due() {
         let mut session = GameSession::new(
             SessionId::new(1),
@@ -87,7 +200,12 @@ mod tests {
             player_id: PlayerId::new(1),
             issued_at_tick: TickId::default(),
             apply_at_tick: TickId::new(2),
-            command: CommandKind::NoOp,
+            command: CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: 8,
+                reserved_for_training: 3,
+                reserved_for_agents: 0,
+                available: 20,
+            },
         };
 
         session
@@ -100,6 +218,8 @@ mod tests {
 
         session.advance_tick();
         assert_eq!(session.pending_commands().len(), 0);
+        let player = &session.state().players[0];
+        assert_eq!(player.throughput.available, 20);
         assert!(
             session
                 .event_log()
@@ -145,7 +265,12 @@ mod tests {
             player_id: PlayerId::new(1),
             issued_at_tick: TickId::default(),
             apply_at_tick: TickId::new(2),
-            command: CommandKind::NoOp,
+            command: CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: 7,
+                reserved_for_training: 4,
+                reserved_for_agents: 0,
+                available: 25,
+            },
         };
 
         session
@@ -163,6 +288,7 @@ mod tests {
         restored.advance_tick();
 
         assert_eq!(restored.pending_commands().len(), 0);
+        assert_eq!(restored.state().players[0].throughput.available, 25);
         assert!(
             restored
                 .event_log()
@@ -184,7 +310,12 @@ mod tests {
             player_id: PlayerId::new(1),
             issued_at_tick: TickId::default(),
             apply_at_tick: TickId::new(2),
-            command: CommandKind::NoOp,
+            command: CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: 9,
+                reserved_for_training: 6,
+                reserved_for_agents: 0,
+                available: 30,
+            },
         };
 
         session
@@ -197,7 +328,12 @@ mod tests {
             player_id: PlayerId::new(2),
             issued_at_tick: TickId::new(1),
             apply_at_tick: TickId::new(1),
-            command: CommandKind::NoOp,
+            command: CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: 5,
+                reserved_for_training: 3,
+                reserved_for_agents: 0,
+                available: 18,
+            },
         };
 
         session
@@ -222,6 +358,14 @@ mod tests {
             replayed.replay_log().accepted_commands.len(),
             session.replay_log().accepted_commands.len()
         );
+        assert_eq!(
+            replayed.state().players[0].throughput,
+            session.state().players[0].throughput
+        );
+        assert_eq!(
+            replayed.state().players[1].throughput,
+            session.state().players[1].throughput
+        );
     }
 
     #[test]
@@ -237,7 +381,12 @@ mod tests {
             player_id: PlayerId::new(1),
             issued_at_tick: TickId::default(),
             apply_at_tick: TickId::new(2),
-            command: CommandKind::NoOp,
+            command: CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: 11,
+                reserved_for_training: 9,
+                reserved_for_agents: 0,
+                available: 32,
+            },
         };
 
         session
@@ -257,6 +406,11 @@ mod tests {
             restored.replay_log().accepted_commands,
             session.replay_log().accepted_commands
         );
+
+        let mut advanced = restored;
+        advanced.advance_tick();
+        advanced.advance_tick();
+        assert_eq!(advanced.state().players[0].throughput.available, 32);
     }
 
     #[test]

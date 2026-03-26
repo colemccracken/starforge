@@ -4,14 +4,14 @@ Status: Active plan; Milestone 2 in progress
 Last Updated: 2026-03-25  
 Source of Truth: [STARFORGE_REFERENCE.md](STARFORGE_REFERENCE.md)  
 Current Milestone: Simulation foundation  
-Current Focus: Extend simulation foundation with concrete non-placeholder command execution behavior and broader determinism coverage in `starforge-core`.
+Current Focus: Extend simulation foundation with seeded RNG support and broader determinism coverage in `starforge-core`.
 
 ## Current Execution State
 
 - Current milestone: Simulation foundation
-- Current next action: Replace the placeholder command execution path with a more representative deterministic command flow and expand replay/state-hash regression coverage around it.
+- Current next action: Add deterministic seeded RNG to authoritative state and extend replay, snapshot, and hash regression coverage around it.
 - Blockers: None currently identified.
-- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then implemented deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore and replay reconstruction support, and added in-memory plus JSON snapshot round-trip tests in `starforge-core`.
+- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then implemented deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore and replay reconstruction support, added in-memory plus JSON snapshot round-trip tests, and replaced the placeholder command path with deterministic throughput and agent-assignment mutations in `starforge-core`.
 
 ## Purpose
 
