@@ -2,7 +2,8 @@ use std::{fmt, fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 use starforge_core::{
-    GameConfig, LocationKind, MatchSeed, PlayerId, RelayStatus, ScenarioConfig, StartingLocation,
+    BuildCapacity, EnergyPotential, GameConfig, LocationConnection, LocationKind, MatchSeed,
+    PlayerId, RelayStatus, ResourceRichness, ScenarioConfig, StartingLocation, StrategicPosition,
     TerritoryState,
 };
 
@@ -110,12 +111,14 @@ pub fn compile_scenario_config(
 
     let starting_locations =
         generate_starting_locations(&ruleset.world, &scenario.players, scenario.seed)?;
+    let connections = generate_location_connections(&starting_locations, scenario.seed)?;
 
     Ok(ScenarioConfig {
         name: scenario.name.clone(),
         player_ids: scenario.players.iter().map(|player| player.id).collect(),
         seed: scenario.seed,
         starting_locations,
+        connections,
     })
 }
 
@@ -214,6 +217,7 @@ fn generate_starting_locations(
 
     let mut locations = Vec::with_capacity(body_count);
     for (index, player) in players.iter().enumerate() {
+        let attributes = homeworld_attributes();
         locations.push(StartingLocation {
             location_id: u32::try_from(index + 1).expect("player homeworld ids fit in u32"),
             name: player
@@ -221,6 +225,10 @@ fn generate_starting_locations(
                 .clone()
                 .unwrap_or_else(|| format!("Player {} Prime", player.id.0)),
             kind: LocationKind::HabitablePlanet,
+            resource_richness: attributes.resource_richness,
+            energy_potential: attributes.energy_potential,
+            build_capacity: attributes.build_capacity,
+            strategic_position: roll_strategic_position(&mut rng, true),
             territory: TerritoryState::Owned,
             controller: Some(player.id),
             homeworld_of: Some(player.id),
@@ -233,10 +241,15 @@ fn generate_starting_locations(
 
     for index in players.len()..body_count {
         let kind = roll_location_kind(&mut rng);
+        let attributes = roll_world_attributes(&mut rng, &kind);
         locations.push(StartingLocation {
             location_id: u32::try_from(index + 1).expect("generated location ids fit in u32"),
             name: neutral_world_name(kind.clone(), index + 1),
             kind,
+            resource_richness: attributes.resource_richness,
+            energy_potential: attributes.energy_potential,
+            build_capacity: attributes.build_capacity,
+            strategic_position: roll_strategic_position(&mut rng, false),
             territory: TerritoryState::Neutral,
             controller: None,
             homeworld_of: None,
@@ -276,7 +289,297 @@ fn generate_starting_locations(
         locations[index].hostile_remnant_present = true;
     }
 
+    validate_generated_locations(&locations, players)?;
+
     Ok(locations)
+}
+
+struct WorldAttributes {
+    resource_richness: ResourceRichness,
+    energy_potential: EnergyPotential,
+    build_capacity: BuildCapacity,
+}
+
+fn homeworld_attributes() -> WorldAttributes {
+    WorldAttributes {
+        resource_richness: ResourceRichness::Rich,
+        energy_potential: EnergyPotential::High,
+        build_capacity: BuildCapacity::Expansive,
+    }
+}
+
+fn roll_world_attributes(rng: &mut SeededRng, kind: &LocationKind) -> WorldAttributes {
+    match kind {
+        LocationKind::HabitablePlanet => WorldAttributes {
+            resource_richness: roll_from_slice(
+                rng,
+                &[ResourceRichness::Moderate, ResourceRichness::Rich],
+            ),
+            energy_potential: roll_from_slice(
+                rng,
+                &[EnergyPotential::Moderate, EnergyPotential::High],
+            ),
+            build_capacity: roll_from_slice(
+                rng,
+                &[BuildCapacity::Standard, BuildCapacity::Expansive],
+            ),
+        },
+        LocationKind::BarrenWorld => WorldAttributes {
+            resource_richness: roll_from_slice(
+                rng,
+                &[ResourceRichness::Sparse, ResourceRichness::Moderate],
+            ),
+            energy_potential: roll_from_slice(
+                rng,
+                &[EnergyPotential::Low, EnergyPotential::Moderate],
+            ),
+            build_capacity: roll_from_slice(
+                rng,
+                &[BuildCapacity::Constrained, BuildCapacity::Standard],
+            ),
+        },
+        LocationKind::VolcanicWorld => WorldAttributes {
+            resource_richness: roll_from_slice(
+                rng,
+                &[ResourceRichness::Moderate, ResourceRichness::Rich],
+            ),
+            energy_potential: EnergyPotential::High,
+            build_capacity: roll_from_slice(
+                rng,
+                &[BuildCapacity::Constrained, BuildCapacity::Standard],
+            ),
+        },
+        LocationKind::IceWorld => WorldAttributes {
+            resource_richness: roll_from_slice(
+                rng,
+                &[ResourceRichness::Sparse, ResourceRichness::Moderate],
+            ),
+            energy_potential: roll_from_slice(
+                rng,
+                &[EnergyPotential::Low, EnergyPotential::Moderate],
+            ),
+            build_capacity: roll_from_slice(
+                rng,
+                &[BuildCapacity::Constrained, BuildCapacity::Standard],
+            ),
+        },
+        LocationKind::Moon => WorldAttributes {
+            resource_richness: roll_from_slice(
+                rng,
+                &[ResourceRichness::Sparse, ResourceRichness::Moderate],
+            ),
+            energy_potential: EnergyPotential::Low,
+            build_capacity: BuildCapacity::Constrained,
+        },
+        LocationKind::AsteroidCluster => WorldAttributes {
+            resource_richness: ResourceRichness::Rich,
+            energy_potential: EnergyPotential::Low,
+            build_capacity: BuildCapacity::Constrained,
+        },
+        LocationKind::GasGiant => WorldAttributes {
+            resource_richness: ResourceRichness::Moderate,
+            energy_potential: EnergyPotential::High,
+            build_capacity: BuildCapacity::Constrained,
+        },
+    }
+}
+
+fn roll_strategic_position(rng: &mut SeededRng, is_homeworld: bool) -> StrategicPosition {
+    if is_homeworld {
+        return roll_from_slice(
+            rng,
+            &[StrategicPosition::Balanced, StrategicPosition::Central],
+        );
+    }
+
+    roll_from_slice(
+        rng,
+        &[
+            StrategicPosition::Peripheral,
+            StrategicPosition::Balanced,
+            StrategicPosition::Central,
+        ],
+    )
+}
+
+fn validate_generated_locations(
+    locations: &[StartingLocation],
+    players: &[PlayerSlotDocument],
+) -> Result<(), ContentError> {
+    let homeworlds: Vec<_> = locations
+        .iter()
+        .filter(|location| location.homeworld_of.is_some())
+        .collect();
+    if homeworlds.len() != players.len() {
+        return Err(ContentError::Validation(
+            "generated locations must contain exactly one homeworld per player".to_owned(),
+        ));
+    }
+
+    for player in players {
+        let matching_homeworlds: Vec<_> = homeworlds
+            .iter()
+            .filter(|location| location.homeworld_of == Some(player.id))
+            .collect();
+        if matching_homeworlds.len() != 1 {
+            return Err(ContentError::Validation(format!(
+                "player {} must have exactly one generated homeworld",
+                player.id.0
+            )));
+        }
+    }
+
+    for location in homeworlds {
+        if location.kind != LocationKind::HabitablePlanet
+            || location.territory != TerritoryState::Owned
+            || location.controller != location.homeworld_of
+            || location.relay_status != RelayStatus::Connected
+            || location.has_environmental_hazard
+            || location.hostile_remnant_present
+            || location.resource_richness != ResourceRichness::Rich
+            || location.energy_potential != EnergyPotential::High
+            || location.build_capacity != BuildCapacity::Expansive
+        {
+            return Err(ContentError::Validation(
+                "generated homeworld invariant violated".to_owned(),
+            ));
+        }
+    }
+
+    for location in locations {
+        if location.hostile_remnant_present && location.territory != TerritoryState::Neutral {
+            return Err(ContentError::Validation(
+                "hostile remnants may only appear on neutral locations".to_owned(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn generate_location_connections(
+    locations: &[StartingLocation],
+    seed: MatchSeed,
+) -> Result<Vec<LocationConnection>, ContentError> {
+    if locations.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    let mut rng = SeededRng::new(seed.as_u64().wrapping_add(0xa5a5a5a5a5a5a5a5));
+    let mut connections = Vec::new();
+
+    for index in 0..locations.len() {
+        let next_index = (index + 1) % locations.len();
+        connections.push(make_connection(
+            &locations[index],
+            &locations[next_index],
+            &mut rng,
+        ));
+    }
+
+    let extra_links = usize::max(1, locations.len() / 4);
+    for _ in 0..extra_links {
+        let from_index = usize::try_from(
+            rng.next_u64() % u64::try_from(locations.len()).expect("location len fits"),
+        )
+        .expect("generated index fits in usize");
+        let mut to_index = usize::try_from(
+            rng.next_u64() % u64::try_from(locations.len()).expect("location len fits"),
+        )
+        .expect("generated index fits in usize");
+
+        if from_index == to_index {
+            to_index = (to_index + 2) % locations.len();
+        }
+
+        let connection = make_connection(&locations[from_index], &locations[to_index], &mut rng);
+        if !connections.iter().any(|existing| {
+            existing.from_location_id == connection.from_location_id
+                && existing.to_location_id == connection.to_location_id
+        }) {
+            connections.push(connection);
+        }
+    }
+
+    connections.sort();
+    validate_generated_connections(locations, &connections)?;
+
+    Ok(connections)
+}
+
+fn make_connection(
+    from: &StartingLocation,
+    to: &StartingLocation,
+    rng: &mut SeededRng,
+) -> LocationConnection {
+    let (from_location_id, to_location_id) = if from.location_id < to.location_id {
+        (from.location_id, to.location_id)
+    } else {
+        (to.location_id, from.location_id)
+    };
+
+    let strategic_bonus = match (&from.strategic_position, &to.strategic_position) {
+        (StrategicPosition::Central, StrategicPosition::Central) => 0,
+        (StrategicPosition::Central, _) | (_, StrategicPosition::Central) => 5,
+        (StrategicPosition::Balanced, StrategicPosition::Balanced) => 10,
+        _ => 15,
+    };
+
+    LocationConnection {
+        from_location_id,
+        to_location_id,
+        travel_time_ticks: 30 + strategic_bonus + u32::from(rng.roll_inclusive_u8(0, 30)),
+    }
+}
+
+fn validate_generated_connections(
+    locations: &[StartingLocation],
+    connections: &[LocationConnection],
+) -> Result<(), ContentError> {
+    let location_ids: Vec<u32> = locations
+        .iter()
+        .map(|location| location.location_id)
+        .collect();
+
+    for connection in connections {
+        if connection.from_location_id >= connection.to_location_id {
+            return Err(ContentError::Validation(
+                "generated connections must be stored in canonical id order".to_owned(),
+            ));
+        }
+
+        if connection.travel_time_ticks == 0 {
+            return Err(ContentError::Validation(
+                "generated connections must have nonzero travel time".to_owned(),
+            ));
+        }
+
+        if !location_ids.contains(&connection.from_location_id)
+            || !location_ids.contains(&connection.to_location_id)
+        {
+            return Err(ContentError::Validation(
+                "generated connection references an unknown location".to_owned(),
+            ));
+        }
+    }
+
+    for location_id in location_ids {
+        if !connections.iter().any(|connection| {
+            connection.from_location_id == location_id || connection.to_location_id == location_id
+        }) {
+            return Err(ContentError::Validation(format!(
+                "generated location {location_id} is disconnected"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn roll_from_slice<T: Clone>(rng: &mut SeededRng, options: &[T]) -> T {
+    let index = usize::try_from(rng.next_u64() % u64::try_from(options.len()).expect("fits"))
+        .expect("generated index fits in usize");
+    options[index].clone()
 }
 
 fn roll_location_kind(rng: &mut SeededRng) -> LocationKind {
@@ -348,7 +651,9 @@ mod tests {
     use super::{
         ContentError, compile_scenario_config, parse_ruleset_document, parse_scenario_document,
     };
-    use starforge_core::{LocationKind, RelayStatus, TerritoryState};
+    use starforge_core::{
+        BuildCapacity, EnergyPotential, LocationKind, RelayStatus, ResourceRichness, TerritoryState,
+    };
 
     const RULESET_YAML: &str = r#"
 name: starter_skirmish
@@ -397,6 +702,7 @@ players:
 
         assert_eq!(compiled.player_ids.len(), 2);
         assert!((18..=24).contains(&compiled.starting_locations.len()));
+        assert!(compiled.connections.len() >= compiled.starting_locations.len());
 
         let homeworlds: Vec<_> = compiled
             .starting_locations
@@ -406,6 +712,9 @@ players:
         assert_eq!(homeworlds.len(), 2);
         assert!(homeworlds.iter().all(|location| {
             location.kind == LocationKind::HabitablePlanet
+                && location.resource_richness == ResourceRichness::Rich
+                && location.energy_potential == EnergyPotential::High
+                && location.build_capacity == BuildCapacity::Expansive
                 && location.territory == TerritoryState::Owned
                 && location.controller == location.homeworld_of
                 && location.relay_status == RelayStatus::Connected
@@ -419,6 +728,17 @@ players:
                 .iter()
                 .any(|location| location.territory == TerritoryState::Neutral)
         );
+        assert!(
+            compiled
+                .starting_locations
+                .iter()
+                .filter(|location| location.hostile_remnant_present)
+                .all(|location| location.territory == TerritoryState::Neutral)
+        );
+        assert!(compiled.connections.iter().all(|connection| {
+            connection.from_location_id < connection.to_location_id
+                && connection.travel_time_ticks > 0
+        }));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{MatchSeed, PlayerId, StartingLocation, TickId};
+use crate::{LocationConnection, MatchSeed, PlayerId, StartingLocation, TickId};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameState {
@@ -8,6 +8,7 @@ pub struct GameState {
     pub rng_state: u64,
     pub players: Vec<PlayerState>,
     pub locations: Vec<LocationState>,
+    pub connections: Vec<LocationConnection>,
     pub transits: Vec<TransitState>,
     pub victory: VictoryState,
 }
@@ -17,6 +18,7 @@ impl GameState {
         player_ids: Vec<PlayerId>,
         seed: MatchSeed,
         starting_locations: Vec<StartingLocation>,
+        connections: Vec<LocationConnection>,
     ) -> Self {
         Self {
             tick_id: TickId::default(),
@@ -26,6 +28,7 @@ impl GameState {
                 .into_iter()
                 .map(LocationState::from)
                 .collect(),
+            connections,
             transits: Vec::new(),
             victory: VictoryState::Ongoing,
         }
@@ -70,6 +73,10 @@ pub struct LocationState {
     pub location_id: u32,
     pub name: String,
     pub kind: LocationKind,
+    pub resource_richness: ResourceRichness,
+    pub energy_potential: EnergyPotential,
+    pub build_capacity: BuildCapacity,
+    pub strategic_position: StrategicPosition,
     pub territory: TerritoryState,
     pub controller: Option<PlayerId>,
     pub homeworld_of: Option<PlayerId>,
@@ -85,6 +92,10 @@ impl From<StartingLocation> for LocationState {
             location_id: location.location_id,
             name: location.name,
             kind: location.kind,
+            resource_richness: location.resource_richness,
+            energy_potential: location.energy_potential,
+            build_capacity: location.build_capacity,
+            strategic_position: location.strategic_position,
             territory: location.territory,
             controller: location.controller,
             homeworld_of: location.homeworld_of,
@@ -140,6 +151,34 @@ pub enum LocationKind {
     Moon,
     AsteroidCluster,
     GasGiant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ResourceRichness {
+    Sparse,
+    Moderate,
+    Rich,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum EnergyPotential {
+    Low,
+    Moderate,
+    High,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BuildCapacity {
+    Constrained,
+    Standard,
+    Expansive,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum StrategicPosition {
+    Peripheral,
+    Balanced,
+    Central,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

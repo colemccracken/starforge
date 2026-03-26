@@ -104,6 +104,10 @@ mod tests {
         assert_eq!(harness.game_config.max_players, 2);
         assert_eq!(harness.scenario_config.player_ids.len(), 2);
         assert!((18..=24).contains(&harness.scenario_config.starting_locations.len()));
+        assert!(
+            harness.scenario_config.connections.len()
+                >= harness.scenario_config.starting_locations.len()
+        );
     }
 
     #[test]
@@ -115,6 +119,10 @@ mod tests {
         assert_eq!(
             session.state().locations.len(),
             harness.scenario_config.starting_locations.len()
+        );
+        assert_eq!(
+            session.state().connections.len(),
+            harness.scenario_config.connections.len()
         );
         assert!(
             session

@@ -1,7 +1,8 @@
 use crate::{
-    CommandEnvelope, CommandKind, EventKind, EventRecord, GameConfig, GameState, LocationKind,
-    LocationState, PlayerId, RelayStatus, ReplayLog, ScenarioConfig, SessionId, Snapshot,
-    TerritoryState, ValidationError,
+    BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, EventRecord,
+    GameConfig, GameState, LocationKind, LocationState, PlayerId, RelayStatus, ReplayLog,
+    ResourceRichness, ScenarioConfig, SessionId, Snapshot, StrategicPosition, TerritoryState,
+    ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +21,7 @@ impl GameSession {
         let player_ids = scenario.player_ids.clone();
         let seed = scenario.seed;
         let starting_locations = scenario.starting_locations.clone();
+        let connections = scenario.connections.clone();
         let event_log = vec![EventRecord {
             tick_id: Default::default(),
             player_id: None,
@@ -33,7 +35,7 @@ impl GameSession {
             session_id,
             config,
             scenario,
-            state: GameState::new(player_ids, seed, starting_locations),
+            state: GameState::new(player_ids, seed, starting_locations, connections),
             event_log,
             replay_log: ReplayLog::default(),
             pending_commands: Vec::new(),
@@ -369,6 +371,10 @@ impl GameSession {
             location_id,
             name: name.clone(),
             kind: LocationKind::BarrenWorld,
+            resource_richness: ResourceRichness::Sparse,
+            energy_potential: EnergyPotential::Low,
+            build_capacity: BuildCapacity::Constrained,
+            strategic_position: StrategicPosition::Peripheral,
             territory: TerritoryState::Neutral,
             controller: None,
             homeworld_of: None,

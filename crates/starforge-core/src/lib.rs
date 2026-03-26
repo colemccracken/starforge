@@ -8,23 +8,25 @@ pub mod snapshot;
 pub mod state;
 
 pub use command::{CommandEnvelope, CommandKind, ValidationError};
-pub use config::{GameConfig, ScenarioConfig, StartingLocation};
+pub use config::{GameConfig, LocationConnection, ScenarioConfig, StartingLocation};
 pub use event::{EventKind, EventRecord};
 pub use ids::{MatchSeed, PlayerId, SessionId, TickId};
 pub use replay::ReplayLog;
 pub use session::GameSession;
 pub use snapshot::Snapshot;
 pub use state::{
-    AgentAssignment, CommandCollapseState, GameState, LocationKind, LocationState, PlayerState,
-    RelayStatus, TerritoryState, ThroughputBudget, TrainingRunState, TransitState, VictoryState,
-    VisibilityState,
+    AgentAssignment, BuildCapacity, CommandCollapseState, EnergyPotential, GameState, LocationKind,
+    LocationState, PlayerState, RelayStatus, ResourceRichness, StrategicPosition, TerritoryState,
+    ThroughputBudget, TrainingRunState, TransitState, VictoryState, VisibilityState,
 };
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        CommandEnvelope, CommandKind, EventKind, GameConfig, GameSession, LocationKind, MatchSeed,
-        PlayerId, RelayStatus, ScenarioConfig, SessionId, StartingLocation, TerritoryState, TickId,
+        BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, GameConfig,
+        GameSession, LocationConnection, LocationKind, MatchSeed, PlayerId, RelayStatus,
+        ResourceRichness, ScenarioConfig, SessionId, StartingLocation, StrategicPosition,
+        TerritoryState, TickId,
     };
 
     #[test]
@@ -44,24 +46,56 @@ mod tests {
             SessionId::new(1),
             GameConfig::default(),
             ScenarioConfig {
-                starting_locations: vec![StartingLocation {
-                    location_id: 1,
-                    name: "Helios".to_owned(),
-                    kind: LocationKind::HabitablePlanet,
-                    territory: TerritoryState::Owned,
-                    controller: Some(PlayerId::new(1)),
-                    homeworld_of: Some(PlayerId::new(1)),
-                    relay_status: RelayStatus::Connected,
-                    orbital_slots: 3,
-                    has_environmental_hazard: false,
-                    hostile_remnant_present: false,
+                starting_locations: vec![
+                    StartingLocation {
+                        location_id: 1,
+                        name: "Helios".to_owned(),
+                        kind: LocationKind::HabitablePlanet,
+                        resource_richness: ResourceRichness::Rich,
+                        energy_potential: EnergyPotential::High,
+                        build_capacity: BuildCapacity::Expansive,
+                        strategic_position: StrategicPosition::Balanced,
+                        territory: TerritoryState::Owned,
+                        controller: Some(PlayerId::new(1)),
+                        homeworld_of: Some(PlayerId::new(1)),
+                        relay_status: RelayStatus::Connected,
+                        orbital_slots: 3,
+                        has_environmental_hazard: false,
+                        hostile_remnant_present: false,
+                    },
+                    StartingLocation {
+                        location_id: 2,
+                        name: "Selene".to_owned(),
+                        kind: LocationKind::HabitablePlanet,
+                        resource_richness: ResourceRichness::Rich,
+                        energy_potential: EnergyPotential::High,
+                        build_capacity: BuildCapacity::Expansive,
+                        strategic_position: StrategicPosition::Balanced,
+                        territory: TerritoryState::Owned,
+                        controller: Some(PlayerId::new(2)),
+                        homeworld_of: Some(PlayerId::new(2)),
+                        relay_status: RelayStatus::Connected,
+                        orbital_slots: 3,
+                        has_environmental_hazard: false,
+                        hostile_remnant_present: false,
+                    },
+                ],
+                connections: vec![LocationConnection {
+                    from_location_id: 1,
+                    to_location_id: 2,
+                    travel_time_ticks: 45,
                 }],
                 ..ScenarioConfig::default()
             },
         );
 
-        assert_eq!(session.state().locations.len(), 1);
+        assert_eq!(session.state().locations.len(), 2);
+        assert_eq!(session.state().connections.len(), 1);
         assert_eq!(session.state().locations[0].name, "Helios");
+        assert_eq!(
+            session.state().locations[0].resource_richness,
+            ResourceRichness::Rich
+        );
         assert_eq!(
             session.state().locations[0].homeworld_of,
             Some(PlayerId::new(1))
