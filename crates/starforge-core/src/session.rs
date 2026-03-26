@@ -135,6 +135,29 @@ impl GameSession {
 
         self.apply_due_commands();
         self.state.advance_resource_extraction();
+
+        let condition_changes = self.state.advance_infrastructure_wear();
+        if !condition_changes.is_empty() {
+            for change in condition_changes {
+                self.event_log.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: None,
+                    kind: EventKind::InfrastructureConditionChanged {
+                        location_id: change.location_id,
+                        kind: change.kind,
+                        condition: change.condition,
+                    },
+                });
+            }
+
+            for kind in self.economy_updated_events() {
+                self.event_log.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: None,
+                    kind,
+                });
+            }
+        }
     }
 
     pub fn accept_command(&mut self, command: CommandEnvelope) -> Result<(), ValidationError> {

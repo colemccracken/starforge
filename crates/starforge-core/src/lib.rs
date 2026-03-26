@@ -27,10 +27,10 @@ pub use state::{
 mod tests {
     use crate::{
         BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, GameConfig,
-        GameSession, HostileRemnantKind, HostileRemnantSeed, InfrastructureKind,
-        InfrastructureSeed, LocationConnection, LocationKind, MatchSeed, PlayerId, RelayStatus,
-        ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, StartingLocation,
-        StrategicPosition, TerritoryState, ThreatLevel, TickId,
+        GameSession, HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition,
+        InfrastructureKind, InfrastructureSeed, LocationConnection, LocationKind, MatchSeed,
+        PlayerId, RelayStatus, ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId,
+        StartingLocation, StrategicPosition, TerritoryState, ThreatLevel, TickId,
     };
 
     fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
@@ -110,6 +110,22 @@ mod tests {
         homeworld
             .starting_infrastructure
             .push(infrastructure_seed(InfrastructureKind::MiningSite));
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn hazardous_homeworld_scenario() -> ScenarioConfig {
+        let mut homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        homeworld.has_environmental_hazard = true;
 
         ScenarioConfig {
             starting_locations: vec![homeworld],
@@ -799,6 +815,79 @@ mod tests {
                 rare_materials: 62,
             }
         );
+    }
+
+    #[test]
+    fn infrastructure_wear_degrades_and_eventually_offlines_core_economy() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            hazardous_homeworld_scenario(),
+        );
+
+        for _ in 0..34 {
+            session.advance_tick();
+        }
+
+        let energy_producer = session.state().locations[0]
+            .infrastructure
+            .iter()
+            .find(|infrastructure| infrastructure.kind == InfrastructureKind::EnergyProducer)
+            .expect("energy producer should be present");
+        let datacenter = session.state().locations[0]
+            .infrastructure
+            .iter()
+            .find(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
+            .expect("datacenter should be present");
+
+        assert_eq!(energy_producer.condition, InfrastructureCondition::Degraded);
+        assert_eq!(datacenter.condition, InfrastructureCondition::Degraded);
+        assert_eq!(
+            session.state().players[0].economy.total_connected_energy,
+            30
+        );
+        assert_eq!(
+            session.state().players[0]
+                .economy
+                .total_connected_datacenter_capacity,
+            25
+        );
+        assert_eq!(session.state().players[0].throughput.available, 25);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InfrastructureConditionChanged {
+                location_id: 1,
+                kind: InfrastructureKind::EnergyProducer,
+                condition: InfrastructureCondition::Degraded,
+            }
+        )));
+
+        for _ in 0..33 {
+            session.advance_tick();
+        }
+
+        let energy_producer = session.state().locations[0]
+            .infrastructure
+            .iter()
+            .find(|infrastructure| infrastructure.kind == InfrastructureKind::EnergyProducer)
+            .expect("energy producer should still be present");
+        let datacenter = session.state().locations[0]
+            .infrastructure
+            .iter()
+            .find(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
+            .expect("datacenter should still be present");
+
+        assert_eq!(energy_producer.condition, InfrastructureCondition::Offline);
+        assert_eq!(datacenter.condition, InfrastructureCondition::Offline);
+        assert_eq!(session.state().players[0].economy.usable_throughput, 0);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InfrastructureConditionChanged {
+                location_id: 1,
+                kind: InfrastructureKind::EnergyProducer,
+                condition: InfrastructureCondition::Offline,
+            }
+        )));
     }
 
     #[test]

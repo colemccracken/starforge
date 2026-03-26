@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{CommandKind, MatchSeed, PlayerId, RelayStatus, TickId, ValidationError};
+use crate::{
+    CommandKind, InfrastructureCondition, InfrastructureKind, MatchSeed, PlayerId, RelayStatus,
+    TickId, ValidationError,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventRecord {
@@ -53,5 +56,10 @@ pub enum EventKind {
     RelayStatusChanged {
         location_id: u32,
         relay_status: RelayStatus,
+    },
+    InfrastructureConditionChanged {
+        location_id: u32,
+        kind: InfrastructureKind,
+        condition: InfrastructureCondition,
     },
 }

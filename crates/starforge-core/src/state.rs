@@ -111,6 +111,40 @@ impl GameState {
 
         self.recompute_economy();
     }
+
+    pub(crate) fn advance_infrastructure_wear(&mut self) -> Vec<InfrastructureConditionChange> {
+        let mut changes = Vec::new();
+
+        for location in &mut self.locations {
+            if location.territory != TerritoryState::Owned || location.controller.is_none() {
+                continue;
+            }
+
+            let has_environmental_hazard = location.has_environmental_hazard;
+            for infrastructure in &mut location.infrastructure {
+                let previous_condition = infrastructure.condition.clone();
+                infrastructure.wear = infrastructure.wear.saturating_add(infrastructure_wear_rate(
+                    has_environmental_hazard,
+                    &infrastructure.kind,
+                ));
+                infrastructure.condition = condition_for_wear(infrastructure.wear);
+
+                if infrastructure.condition != previous_condition {
+                    changes.push(InfrastructureConditionChange {
+                        location_id: location.location_id,
+                        kind: infrastructure.kind.clone(),
+                        condition: infrastructure.condition.clone(),
+                    });
+                }
+            }
+        }
+
+        if !changes.is_empty() {
+            self.recompute_economy();
+        }
+
+        changes
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +272,7 @@ pub struct InfrastructureState {
     pub kind: InfrastructureKind,
     pub tier: u8,
     pub condition: InfrastructureCondition,
+    pub wear: u32,
 }
 
 impl From<InfrastructureSeed> for InfrastructureState {
@@ -253,9 +288,17 @@ impl From<InfrastructureSeed> for InfrastructureState {
         Self {
             kind: seed.kind,
             tier: seed.tier,
+            wear: initial_wear_for_condition(&condition),
             condition,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InfrastructureConditionChange {
+    pub location_id: u32,
+    pub kind: InfrastructureKind,
+    pub condition: InfrastructureCondition,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,36 +550,38 @@ const fn condition_modifier_percent(condition: &InfrastructureCondition) -> u32 
 }
 
 fn resource_extraction_output(location: &LocationState) -> ResourceStockpiles {
-    let extraction_sites = location
+    let mut output = location
         .infrastructure
         .iter()
         .filter(|infrastructure| infrastructure.kind == InfrastructureKind::MiningSite)
-        .count();
-    if extraction_sites == 0 {
-        return ResourceStockpiles::default();
-    }
+        .fold(
+            ResourceStockpiles::default(),
+            |mut total, infrastructure| {
+                let tier = u32::from(infrastructure.tier);
+                let condition_percent = condition_modifier_percent(&infrastructure.condition);
 
-    let extraction_sites = u32::try_from(extraction_sites).expect("site count fits in u32");
-    let mut output = ResourceStockpiles {
-        common_materials: match location.resource_richness {
-            ResourceRichness::Sparse => 4_u32,
-            ResourceRichness::Moderate => 8_u32,
-            ResourceRichness::Rich => 12_u32,
-        }
-        .saturating_mul(extraction_sites),
-        volatiles: match location.energy_potential {
-            EnergyPotential::Low => 1_u32,
-            EnergyPotential::Moderate => 2_u32,
-            EnergyPotential::High => 3_u32,
-        }
-        .saturating_mul(extraction_sites),
-        rare_materials: match location.resource_richness {
-            ResourceRichness::Sparse => 0_u32,
-            ResourceRichness::Moderate => 1_u32,
-            ResourceRichness::Rich => 2_u32,
-        }
-        .saturating_mul(extraction_sites),
-    };
+                total.common_materials = total.common_materials.saturating_add(
+                    extraction_common_materials(location.resource_richness.clone())
+                        .saturating_mul(tier)
+                        .saturating_mul(condition_percent)
+                        .saturating_div(100),
+                );
+                total.volatiles = total.volatiles.saturating_add(
+                    extraction_volatiles(location.energy_potential.clone())
+                        .saturating_mul(tier)
+                        .saturating_mul(condition_percent)
+                        .saturating_div(100),
+                );
+                total.rare_materials = total.rare_materials.saturating_add(
+                    extraction_rare_materials(location.resource_richness.clone())
+                        .saturating_mul(tier)
+                        .saturating_mul(condition_percent)
+                        .saturating_div(100),
+                );
+
+                total
+            },
+        );
 
     if location.has_environmental_hazard {
         output.common_materials /= 2;
@@ -545,6 +590,73 @@ fn resource_extraction_output(location: &LocationState) -> ResourceStockpiles {
 
     output
 }
+
+const fn condition_for_wear(wear: u32) -> InfrastructureCondition {
+    if wear >= OFFLINE_WEAR_THRESHOLD {
+        InfrastructureCondition::Offline
+    } else if wear >= DEGRADED_WEAR_THRESHOLD {
+        InfrastructureCondition::Degraded
+    } else {
+        InfrastructureCondition::Operational
+    }
+}
+
+const fn initial_wear_for_condition(condition: &InfrastructureCondition) -> u32 {
+    match condition {
+        InfrastructureCondition::Operational => 0,
+        InfrastructureCondition::Degraded => DEGRADED_WEAR_THRESHOLD,
+        InfrastructureCondition::Offline => OFFLINE_WEAR_THRESHOLD,
+    }
+}
+
+fn infrastructure_wear_rate(
+    has_environmental_hazard: bool,
+    infrastructure_kind: &InfrastructureKind,
+) -> u32 {
+    let base_rate = match infrastructure_kind {
+        InfrastructureKind::CommandNexus => 1,
+        InfrastructureKind::MiningSite => 2,
+        InfrastructureKind::EnergyProducer => 2,
+        InfrastructureKind::Datacenter => 2,
+        InfrastructureKind::RelayUplink => 1,
+        InfrastructureKind::ShipyardRing => 2,
+        InfrastructureKind::MilitaryWorks => 2,
+        InfrastructureKind::GroundDefenseSite => 1,
+    };
+
+    if has_environmental_hazard {
+        base_rate + 1
+    } else {
+        base_rate
+    }
+}
+
+const fn extraction_common_materials(resource_richness: ResourceRichness) -> u32 {
+    match resource_richness {
+        ResourceRichness::Sparse => 4,
+        ResourceRichness::Moderate => 8,
+        ResourceRichness::Rich => 12,
+    }
+}
+
+const fn extraction_volatiles(energy_potential: EnergyPotential) -> u32 {
+    match energy_potential {
+        EnergyPotential::Low => 1,
+        EnergyPotential::Moderate => 2,
+        EnergyPotential::High => 3,
+    }
+}
+
+const fn extraction_rare_materials(resource_richness: ResourceRichness) -> u32 {
+    match resource_richness {
+        ResourceRichness::Sparse => 0,
+        ResourceRichness::Moderate => 1,
+        ResourceRichness::Rich => 2,
+    }
+}
+
+const DEGRADED_WEAR_THRESHOLD: u32 = 100;
+const OFFLINE_WEAR_THRESHOLD: u32 = 200;
 
 fn initial_stockpiles(location: &StartingLocation) -> ResourceStockpiles {
     if location.homeworld_of.is_some() {
