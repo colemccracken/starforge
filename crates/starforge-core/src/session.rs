@@ -300,6 +300,22 @@ impl GameSession {
         })
     }
 
+    pub fn player_events(
+        &self,
+        player_id: PlayerId,
+        from_tick: TickId,
+    ) -> Result<Vec<EventRecord>, ValidationError> {
+        self.player_state(player_id)?;
+
+        Ok(self
+            .event_log
+            .iter()
+            .filter(|event| event.tick_id >= from_tick)
+            .filter(|event| self.event_visible_to_player(player_id, event))
+            .cloned()
+            .collect())
+    }
+
     fn apply_due_commands(&mut self) {
         let pending_commands = std::mem::take(&mut self.pending_commands);
         let mut remaining_commands = Vec::with_capacity(pending_commands.len());
@@ -902,6 +918,46 @@ impl GameSession {
                 .visibility
                 .refresh_owned_and_contested(&owned_location_ids, &contested_location_ids);
         }
+    }
+
+    fn event_visible_to_player(&self, player_id: PlayerId, event: &EventRecord) -> bool {
+        match &event.kind {
+            EventKind::SessionCreated { .. } | EventKind::TickAdvanced { .. } => true,
+            EventKind::CommandAccepted { .. }
+            | EventKind::CommandApplied { .. }
+            | EventKind::CommandRejected { .. }
+            | EventKind::ThroughputBudgetSet { .. }
+            | EventKind::EconomyUpdated { .. }
+            | EventKind::AgentAssigned { .. }
+            | EventKind::InfrastructureRepairQueued { .. }
+            | EventKind::InfrastructureRepairCompleted { .. }
+            | EventKind::InfrastructureConstructionQueued { .. }
+            | EventKind::InfrastructureConstructionCompleted { .. }
+            | EventKind::TransitDispatched { .. }
+            | EventKind::TransitArrived { .. }
+            | EventKind::LocationSurveyed { .. } => event.player_id == Some(player_id),
+            EventKind::LocationRegistered { .. } => event.player_id == Some(player_id),
+            EventKind::RelayStatusChanged { location_id, .. }
+            | EventKind::InfrastructureConditionChanged { location_id, .. } => {
+                self.location_is_observed_by_player(player_id, *location_id)
+            }
+        }
+    }
+
+    fn location_is_observed_by_player(&self, player_id: PlayerId, location_id: u32) -> bool {
+        self.player_state(player_id)
+            .map(|player| {
+                player
+                    .visibility
+                    .observed_location_ids
+                    .contains(&location_id)
+                    || self.state.locations.iter().any(|location| {
+                        location.location_id == location_id
+                            && location.controller == Some(player_id)
+                            && location.territory == TerritoryState::Owned
+                    })
+            })
+            .unwrap_or(false)
     }
 
     fn controlled_location_state(

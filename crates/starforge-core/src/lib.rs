@@ -1434,6 +1434,116 @@ mod tests {
     }
 
     #[test]
+    fn player_event_feed_includes_own_transit_and_survey_events() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            survey_fixture_scenario(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            })
+            .expect("survey transit should be accepted");
+
+        for _ in 0..12 {
+            session.advance_tick();
+        }
+
+        let events = session
+            .player_events(PlayerId::new(1), TickId::default())
+            .expect("player event feed should be available");
+
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TransitDispatched {
+                origin_id: 1,
+                destination_id: 2,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TransitArrived {
+                destination_id: 2,
+                ..
+            }
+        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::LocationSurveyed { location_id: 2 }))
+        );
+    }
+
+    #[test]
+    fn player_event_feed_hides_other_players_private_events() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig {
+                starting_locations: vec![
+                    compute_homeworld(
+                        PlayerId::new(1),
+                        1,
+                        "Helios",
+                        EnergyPotential::High,
+                        BuildCapacity::Expansive,
+                    ),
+                    compute_homeworld(
+                        PlayerId::new(2),
+                        2,
+                        "Selene",
+                        EnergyPotential::High,
+                        BuildCapacity::Expansive,
+                    ),
+                ],
+                ..ScenarioConfig::test_fixture()
+            },
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(2),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::SetThroughputBudget {
+                    reserved_for_model_upkeep: 10,
+                    reserved_for_training: 5,
+                    reserved_for_agents: 0,
+                },
+            })
+            .expect("private command should be accepted");
+
+        let player_one_events = session
+            .player_events(PlayerId::new(1), TickId::default())
+            .expect("player one event feed should be available");
+        let player_two_events = session
+            .player_events(PlayerId::new(2), TickId::default())
+            .expect("player two event feed should be available");
+
+        assert!(
+            !player_one_events
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::ThroughputBudgetSet { .. }))
+        );
+        assert!(
+            player_two_events
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::ThroughputBudgetSet { .. }))
+        );
+    }
+
+    #[test]
     fn scenario_locations_can_carry_hostile_remnant_seed_data() {
         let session = GameSession::new(
             SessionId::new(1),
