@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{PlayerId, SessionId, TickId};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CommandEnvelope {
     pub session_id: SessionId,
     pub player_id: PlayerId,
@@ -11,7 +11,7 @@ pub struct CommandEnvelope {
     pub command: CommandKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum CommandKind {
     NoOp,
     AdvanceTick,

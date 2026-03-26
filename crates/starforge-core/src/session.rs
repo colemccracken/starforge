@@ -11,6 +11,7 @@ pub struct GameSession {
     state: GameState,
     event_log: Vec<EventRecord>,
     replay_log: ReplayLog,
+    pending_commands: Vec<CommandEnvelope>,
 }
 
 impl GameSession {
@@ -29,7 +30,53 @@ impl GameSession {
             state: GameState::new(player_ids),
             event_log,
             replay_log: ReplayLog::default(),
+            pending_commands: Vec::new(),
         }
+    }
+
+    pub fn from_snapshot(snapshot: Snapshot) -> Self {
+        Self {
+            session_id: snapshot.session_id,
+            config: snapshot.config,
+            scenario: snapshot.scenario,
+            state: snapshot.state,
+            event_log: snapshot.event_log,
+            replay_log: snapshot.replay_log,
+            pending_commands: snapshot.pending_commands,
+        }
+    }
+
+    pub fn replay_from_log(
+        session_id: SessionId,
+        config: GameConfig,
+        scenario: ScenarioConfig,
+        replay_log: ReplayLog,
+    ) -> Result<Self, ValidationError> {
+        let mut session = Self::new(session_id, config, scenario);
+        let mut commands = replay_log.accepted_commands.clone();
+        commands.sort_by_key(|command| {
+            (
+                command.issued_at_tick,
+                command.apply_at_tick,
+                command.player_id,
+                command.command.clone(),
+            )
+        });
+
+        for command in commands {
+            while session.state.tick_id < command.issued_at_tick {
+                session.advance_tick();
+            }
+
+            session.accept_command(command)?;
+        }
+
+        let target_tick = replay_log.max_apply_tick();
+        while session.state.tick_id < target_tick {
+            session.advance_tick();
+        }
+
+        Ok(session)
     }
 
     pub const fn session_id(&self) -> SessionId {
@@ -56,6 +103,10 @@ impl GameSession {
         &self.replay_log
     }
 
+    pub fn pending_commands(&self) -> &[CommandEnvelope] {
+        &self.pending_commands
+    }
+
     pub fn advance_tick(&mut self) {
         self.state.tick_id = self.state.tick_id.next();
         self.event_log.push(EventRecord {
@@ -63,6 +114,8 @@ impl GameSession {
             player_id: None,
             kind: EventKind::TickAdvanced,
         });
+
+        self.apply_due_commands();
     }
 
     pub fn accept_command(&mut self, command: CommandEnvelope) -> Result<(), ValidationError> {
@@ -73,12 +126,32 @@ impl GameSession {
             });
         }
 
+        if command.apply_at_tick < self.state.tick_id {
+            self.event_log.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: Some(command.player_id),
+                kind: EventKind::CommandRejected,
+            });
+
+            return Err(ValidationError {
+                code: "apply_in_past",
+                message: "command apply tick is in the past".to_owned(),
+            });
+        }
+
         self.replay_log.accepted_commands.push(command.clone());
         self.event_log.push(EventRecord {
             tick_id: self.state.tick_id,
             player_id: Some(command.player_id),
             kind: EventKind::CommandAccepted,
         });
+
+        if command.apply_at_tick == self.state.tick_id {
+            self.apply_command(command);
+        } else {
+            self.pending_commands.push(command);
+            self.pending_commands.sort();
+        }
 
         Ok(())
     }
@@ -91,7 +164,42 @@ impl GameSession {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot::new(self.session_id, self.state.clone())
+        Snapshot::new(
+            self.session_id,
+            self.config.clone(),
+            self.scenario.clone(),
+            self.state.clone(),
+            self.event_log.clone(),
+            self.replay_log.clone(),
+            self.pending_commands.clone(),
+        )
+    }
+
+    fn apply_due_commands(&mut self) {
+        let pending_commands = std::mem::take(&mut self.pending_commands);
+        let mut remaining_commands = Vec::with_capacity(pending_commands.len());
+
+        for command in pending_commands {
+            if command.apply_at_tick <= self.state.tick_id {
+                self.apply_command(command);
+            } else {
+                remaining_commands.push(command);
+            }
+        }
+
+        self.pending_commands = remaining_commands;
+    }
+
+    fn apply_command(&mut self, command: CommandEnvelope) {
+        match command.command {
+            crate::CommandKind::NoOp | crate::CommandKind::AdvanceTick => {}
+        }
+
+        self.event_log.push(EventRecord {
+            tick_id: self.state.tick_id,
+            player_id: Some(command.player_id),
+            kind: EventKind::CommandApplied,
+        });
     }
 }
 

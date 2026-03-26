@@ -4,14 +4,14 @@ Status: Active plan; Milestone 2 in progress
 Last Updated: 2026-03-25  
 Source of Truth: [STARFORGE_REFERENCE.md](STARFORGE_REFERENCE.md)  
 Current Milestone: Simulation foundation  
-Current Focus: Extend the initial simulation foundation with deterministic command scheduling, persisted replay data, and snapshot round-trip support in `starforge-core`.
+Current Focus: Extend simulation foundation with concrete command execution behavior, JSON-backed session persistence helpers, and broader determinism coverage in `starforge-core`.
 
 ## Current Execution State
 
 - Current milestone: Simulation foundation
-- Current next action: Add command scheduling and application flow, persist replay data in snapshots, and add save/load round-trip tests in `starforge-core`.
+- Current next action: Add JSON snapshot round-tripping helpers and replace the placeholder command execution path with a more representative deterministic command flow.
 - Blockers: None currently identified.
-- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, and implemented the first simulation-foundation slice with core session scaffolding, tick advancement, event recording, replay logging, and deterministic state hashing.
+- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then implemented deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore support, and added replay reconstruction plus save/load and scheduling tests in `starforge-core`.
 
 ## Purpose
 
@@ -581,4 +581,5 @@ Make the implementation stable enough to support iterative balance and future UI
 2. When work lands, update `Recently completed` with state-oriented summaries rather than a chronological diary.
 3. When blocked, mark the milestone `Blocked` and add the blocker plus the impacted dependency chain.
 4. Mark a milestone `Complete` only after its acceptance criteria are satisfied and its validation-matrix scenarios are passing at the intended level.
-5. Keep this file concise and execution-oriented; design rationale belongs in [STARFORGE_REFERENCE.md](STARFORGE_REFERENCE.md), not here.
+5. After a coherent slice passes `cargo fmt`, `cargo check`, `cargo test`, and `cargo clippy --workspace --all-targets -- -D warnings`, create a commit before starting the next slice.
+6. Keep this file concise and execution-oriented; design rationale belongs in [STARFORGE_REFERENCE.md](STARFORGE_REFERENCE.md), not here.

@@ -14,5 +14,6 @@ pub enum EventKind {
     SessionCreated,
     TickAdvanced,
     CommandAccepted,
+    CommandApplied,
     CommandRejected,
 }
