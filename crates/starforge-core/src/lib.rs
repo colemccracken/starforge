@@ -225,6 +225,41 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_json_round_trip_preserves_session_state() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        let command = CommandEnvelope {
+            session_id: SessionId::new(1),
+            player_id: PlayerId::new(1),
+            issued_at_tick: TickId::default(),
+            apply_at_tick: TickId::new(2),
+            command: CommandKind::NoOp,
+        };
+
+        session
+            .accept_command(command)
+            .expect("command should be accepted");
+        session.advance_tick();
+
+        let json = session
+            .snapshot_json()
+            .expect("snapshot should serialize to json");
+        let restored =
+            GameSession::from_snapshot_json(&json).expect("snapshot should deserialize from json");
+
+        assert_eq!(restored.state_hash(), session.state_hash());
+        assert_eq!(restored.pending_commands(), session.pending_commands());
+        assert_eq!(
+            restored.replay_log().accepted_commands,
+            session.replay_log().accepted_commands
+        );
+    }
+
+    #[test]
     fn identical_starting_sessions_have_the_same_state_hash() {
         let session_a = GameSession::new(
             SessionId::new(1),

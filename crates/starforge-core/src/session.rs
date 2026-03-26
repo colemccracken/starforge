@@ -46,6 +46,10 @@ impl GameSession {
         }
     }
 
+    pub fn from_snapshot_json(json: &str) -> Result<Self, serde_json::Error> {
+        Snapshot::from_json(json).map(Self::from_snapshot)
+    }
+
     pub fn replay_from_log(
         session_id: SessionId,
         config: GameConfig,
@@ -173,6 +177,10 @@ impl GameSession {
             self.replay_log.clone(),
             self.pending_commands.clone(),
         )
+    }
+
+    pub fn snapshot_json(&self) -> Result<String, serde_json::Error> {
+        self.snapshot().to_json()
     }
 
     fn apply_due_commands(&mut self) {
