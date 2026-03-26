@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{InfrastructureKind, PlayerId, RelayStatus, SessionId, TickId};
@@ -66,3 +68,11 @@ pub struct ValidationError {
     pub code: String,
     pub message: String,
 }
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.message, self.code)
+    }
+}
+
+impl std::error::Error for ValidationError {}
