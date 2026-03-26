@@ -1,8 +1,9 @@
 use crate::{
     BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, EventRecord,
-    GameConfig, GameState, LocationKind, LocationState, PlayerId, RelayStatus, ReplayLog,
-    ResourceRichness, ScenarioConfig, SessionId, Snapshot, StrategicPosition, TerritoryState,
-    ValidationError,
+    GameConfig, GameState, InfrastructureCondition, InfrastructureKind, InfrastructureProjectKind,
+    InfrastructureProjectState, LocationKind, LocationState, PlayerId, RelayStatus, ReplayLog,
+    ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, Snapshot, StrategicPosition,
+    TerritoryState, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +135,29 @@ impl GameSession {
         });
 
         self.apply_due_commands();
+
+        let completions = self.state.advance_infrastructure_projects();
+        if !completions.is_empty() {
+            for completion in completions {
+                self.event_log.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: None,
+                    kind: EventKind::InfrastructureRepairCompleted {
+                        location_id: completion.location_id,
+                        kind: completion.kind,
+                    },
+                });
+            }
+
+            for kind in self.economy_updated_events() {
+                self.event_log.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: None,
+                    kind,
+                });
+            }
+        }
+
         self.state.advance_resource_extraction();
 
         let condition_changes = self.state.advance_infrastructure_wear();
@@ -271,6 +295,12 @@ impl GameSession {
                 location_id,
                 relay_status,
             } => self.apply_set_relay_status(location_id, relay_status),
+            CommandKind::QueueInfrastructureRepair {
+                location_id,
+                infrastructure_kind,
+            } => {
+                self.apply_queue_infrastructure_repair(player_id, location_id, infrastructure_kind)
+            }
         };
 
         match applied {
@@ -402,6 +432,7 @@ impl GameSession {
             orbital_slots: 1,
             has_environmental_hazard: false,
             infrastructure: Vec::new(),
+            infrastructure_projects: Vec::new(),
             economy: Default::default(),
             stockpiles: Default::default(),
             hostile_remnant: None,
@@ -432,6 +463,113 @@ impl GameSession {
         Ok(events)
     }
 
+    fn apply_queue_infrastructure_repair(
+        &mut self,
+        player_id: PlayerId,
+        location_id: u32,
+        infrastructure_kind: InfrastructureKind,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        let (connected_to_empire, build_capacity, has_environmental_hazard, condition) = {
+            let location = self.controlled_location_state(player_id, location_id)?;
+            if location.infrastructure_projects.iter().any(|project| {
+                matches!(
+                    project.kind,
+                    InfrastructureProjectKind::Repair {
+                        infrastructure_kind: ref queued_kind,
+                    } if *queued_kind == infrastructure_kind
+                )
+            }) {
+                return Err(ValidationError {
+                    code: "repair_already_queued".to_owned(),
+                    message: "a repair project is already queued for this infrastructure"
+                        .to_owned(),
+                });
+            }
+
+            let infrastructure = location
+                .infrastructure
+                .iter()
+                .find(|infrastructure| infrastructure.kind == infrastructure_kind)
+                .ok_or(ValidationError {
+                    code: "missing_infrastructure".to_owned(),
+                    message: "repair command references infrastructure that is not present at the location"
+                        .to_owned(),
+                })?;
+
+            if infrastructure.condition == InfrastructureCondition::Operational {
+                return Err(ValidationError {
+                    code: "infrastructure_not_damaged".to_owned(),
+                    message: "repair can only be queued for degraded or offline infrastructure"
+                        .to_owned(),
+                });
+            }
+
+            (
+                location.economy.connected_to_empire,
+                location.build_capacity.clone(),
+                location.has_environmental_hazard,
+                infrastructure.condition.clone(),
+            )
+        };
+
+        let cost = repair_cost(&infrastructure_kind, &condition);
+        let duration_ticks = repair_duration(build_capacity, has_environmental_hazard, &condition);
+
+        if connected_to_empire {
+            let available = self
+                .state
+                .players
+                .iter()
+                .find(|player| player.player_id == player_id)
+                .ok_or(ValidationError {
+                    code: "unknown_player".to_owned(),
+                    message: "command references a player that does not exist in the session"
+                        .to_owned(),
+                })?
+                .economy
+                .connected_stockpiles
+                .clone();
+            if !available.can_cover(&cost) {
+                return Err(ValidationError {
+                    code: "insufficient_materials".to_owned(),
+                    message: "connected stockpiles cannot cover the requested repair".to_owned(),
+                });
+            }
+
+            self.spend_connected_stockpiles(player_id, location_id, &cost)?;
+        } else {
+            let location = self.controlled_location_state_mut(player_id, location_id)?;
+            if !location.stockpiles.can_cover(&cost) {
+                return Err(ValidationError {
+                    code: "insufficient_materials".to_owned(),
+                    message: "local stockpiles cannot cover the requested repair".to_owned(),
+                });
+            }
+
+            let mut remaining_cost = cost.clone();
+            location.stockpiles.spend_partial(&mut remaining_cost);
+        }
+
+        let location = self.controlled_location_state_mut(player_id, location_id)?;
+        location
+            .infrastructure_projects
+            .push(InfrastructureProjectState {
+                kind: InfrastructureProjectKind::Repair {
+                    infrastructure_kind: infrastructure_kind.clone(),
+                },
+                remaining_ticks: duration_ticks,
+                total_ticks: duration_ticks,
+            });
+        self.state.recompute_economy();
+
+        Ok(vec![EventKind::InfrastructureRepairQueued {
+            location_id,
+            kind: infrastructure_kind,
+            duration_ticks,
+            cost,
+        }])
+    }
+
     fn player_state_mut(
         &mut self,
         player_id: PlayerId,
@@ -445,6 +583,99 @@ impl GameSession {
                 message: "command references a player that does not exist in the session"
                     .to_owned(),
             })
+    }
+
+    fn controlled_location_state(
+        &self,
+        player_id: PlayerId,
+        location_id: u32,
+    ) -> Result<&LocationState, ValidationError> {
+        let location = self
+            .state
+            .locations
+            .iter()
+            .find(|location| location.location_id == location_id)
+            .ok_or(ValidationError {
+                code: "unknown_location".to_owned(),
+                message: "command references a location that does not exist in the session"
+                    .to_owned(),
+            })?;
+
+        if location.controller != Some(player_id) || location.territory != TerritoryState::Owned {
+            return Err(ValidationError {
+                code: "location_not_controlled".to_owned(),
+                message: "command requires an owned location controlled by the issuing player"
+                    .to_owned(),
+            });
+        }
+
+        Ok(location)
+    }
+
+    fn controlled_location_state_mut(
+        &mut self,
+        player_id: PlayerId,
+        location_id: u32,
+    ) -> Result<&mut LocationState, ValidationError> {
+        let location = self.location_state_mut(location_id)?;
+        if location.controller != Some(player_id) || location.territory != TerritoryState::Owned {
+            return Err(ValidationError {
+                code: "location_not_controlled".to_owned(),
+                message: "command requires an owned location controlled by the issuing player"
+                    .to_owned(),
+            });
+        }
+
+        Ok(location)
+    }
+
+    fn spend_connected_stockpiles(
+        &mut self,
+        player_id: PlayerId,
+        location_id: u32,
+        cost: &ResourceStockpiles,
+    ) -> Result<(), ValidationError> {
+        let target_index = self
+            .state
+            .locations
+            .iter()
+            .position(|location| location.location_id == location_id)
+            .ok_or(ValidationError {
+                code: "unknown_location".to_owned(),
+                message: "command references a location that does not exist in the session"
+                    .to_owned(),
+            })?;
+
+        let mut candidate_indices = Vec::new();
+        candidate_indices.push(target_index);
+        candidate_indices.extend(
+            self.state
+                .locations
+                .iter()
+                .enumerate()
+                .filter(|(index, location)| {
+                    *index != target_index
+                        && location.controller == Some(player_id)
+                        && location.territory == TerritoryState::Owned
+                        && location.economy.connected_to_empire
+                })
+                .map(|(index, _)| index),
+        );
+
+        let mut remaining_cost = cost.clone();
+        for index in candidate_indices {
+            self.state.locations[index]
+                .stockpiles
+                .spend_partial(&mut remaining_cost);
+            if remaining_cost.is_zero() {
+                return Ok(());
+            }
+        }
+
+        Err(ValidationError {
+            code: "insufficient_materials".to_owned(),
+            message: "connected stockpiles cannot cover the requested repair".to_owned(),
+        })
     }
 
     fn location_state_mut(
@@ -489,4 +720,84 @@ fn stable_hash(bytes: &[u8]) -> u64 {
     }
 
     hash
+}
+
+fn repair_cost(
+    infrastructure_kind: &InfrastructureKind,
+    condition: &InfrastructureCondition,
+) -> ResourceStockpiles {
+    let base_cost = match infrastructure_kind {
+        InfrastructureKind::CommandNexus => ResourceStockpiles {
+            common_materials: 60,
+            volatiles: 20,
+            rare_materials: 10,
+        },
+        InfrastructureKind::MiningSite => ResourceStockpiles {
+            common_materials: 30,
+            volatiles: 10,
+            rare_materials: 0,
+        },
+        InfrastructureKind::EnergyProducer => ResourceStockpiles {
+            common_materials: 45,
+            volatiles: 15,
+            rare_materials: 4,
+        },
+        InfrastructureKind::Datacenter => ResourceStockpiles {
+            common_materials: 40,
+            volatiles: 10,
+            rare_materials: 4,
+        },
+        InfrastructureKind::RelayUplink => ResourceStockpiles {
+            common_materials: 25,
+            volatiles: 8,
+            rare_materials: 2,
+        },
+        InfrastructureKind::ShipyardRing => ResourceStockpiles {
+            common_materials: 70,
+            volatiles: 20,
+            rare_materials: 10,
+        },
+        InfrastructureKind::MilitaryWorks => ResourceStockpiles {
+            common_materials: 60,
+            volatiles: 16,
+            rare_materials: 8,
+        },
+        InfrastructureKind::GroundDefenseSite => ResourceStockpiles {
+            common_materials: 35,
+            volatiles: 10,
+            rare_materials: 4,
+        },
+    };
+
+    let multiplier = match condition {
+        InfrastructureCondition::Operational => 0,
+        InfrastructureCondition::Degraded => 1,
+        InfrastructureCondition::Offline => 2,
+    };
+
+    ResourceStockpiles {
+        common_materials: base_cost.common_materials.saturating_mul(multiplier),
+        volatiles: base_cost.volatiles.saturating_mul(multiplier),
+        rare_materials: base_cost.rare_materials.saturating_mul(multiplier),
+    }
+}
+
+fn repair_duration(
+    build_capacity: BuildCapacity,
+    has_environmental_hazard: bool,
+    condition: &InfrastructureCondition,
+) -> u32 {
+    let base_duration: i32 = match condition {
+        InfrastructureCondition::Operational => 0,
+        InfrastructureCondition::Degraded => 3,
+        InfrastructureCondition::Offline => 5,
+    };
+    let build_adjustment = match build_capacity {
+        BuildCapacity::Constrained => 1,
+        BuildCapacity::Standard => 0,
+        BuildCapacity::Expansive => -1,
+    };
+    let hazard_adjustment = if has_environmental_hazard { 1 } else { 0 };
+
+    (base_duration + build_adjustment + hazard_adjustment).max(1) as u32
 }

@@ -112,6 +112,58 @@ impl GameState {
         self.recompute_economy();
     }
 
+    pub(crate) fn advance_infrastructure_projects(
+        &mut self,
+    ) -> Vec<InfrastructureProjectCompletion> {
+        let mut completions = Vec::new();
+
+        for location in &mut self.locations {
+            if location.infrastructure_projects.is_empty() {
+                continue;
+            }
+
+            for project in &mut location.infrastructure_projects {
+                if project.remaining_ticks > 0 {
+                    project.remaining_ticks -= 1;
+                }
+            }
+
+            let mut remaining_projects = Vec::with_capacity(location.infrastructure_projects.len());
+            for project in std::mem::take(&mut location.infrastructure_projects) {
+                if project.remaining_ticks == 0 {
+                    match project.kind {
+                        InfrastructureProjectKind::Repair {
+                            infrastructure_kind,
+                        } => {
+                            if let Some(infrastructure) = location
+                                .infrastructure
+                                .iter_mut()
+                                .find(|infrastructure| infrastructure.kind == infrastructure_kind)
+                            {
+                                infrastructure.condition = InfrastructureCondition::Operational;
+                                infrastructure.wear = 0;
+                                completions.push(InfrastructureProjectCompletion {
+                                    location_id: location.location_id,
+                                    kind: infrastructure_kind,
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    remaining_projects.push(project);
+                }
+            }
+
+            location.infrastructure_projects = remaining_projects;
+        }
+
+        if !completions.is_empty() {
+            self.recompute_economy();
+        }
+
+        completions
+    }
+
     pub(crate) fn advance_infrastructure_wear(&mut self) -> Vec<InfrastructureConditionChange> {
         let mut changes = Vec::new();
 
@@ -188,6 +240,7 @@ pub struct LocationState {
     pub orbital_slots: u8,
     pub has_environmental_hazard: bool,
     pub infrastructure: Vec<InfrastructureState>,
+    pub infrastructure_projects: Vec<InfrastructureProjectState>,
     pub economy: LocationEconomyState,
     pub stockpiles: ResourceStockpiles,
     pub hostile_remnant: Option<HostileRemnantSeed>,
@@ -217,6 +270,7 @@ impl From<StartingLocation> for LocationState {
             orbital_slots: location.orbital_slots,
             has_environmental_hazard: location.has_environmental_hazard,
             infrastructure,
+            infrastructure_projects: Vec::new(),
             economy: LocationEconomyState::default(),
             stockpiles,
             hostile_remnant: location.hostile_remnant,
@@ -275,6 +329,20 @@ pub struct InfrastructureState {
     pub wear: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InfrastructureProjectState {
+    pub kind: InfrastructureProjectKind,
+    pub remaining_ticks: u32,
+    pub total_ticks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum InfrastructureProjectKind {
+    Repair {
+        infrastructure_kind: InfrastructureKind,
+    },
+}
+
 impl From<InfrastructureSeed> for InfrastructureState {
     fn from(seed: InfrastructureSeed) -> Self {
         let condition = if !seed.starts_online {
@@ -299,6 +367,12 @@ pub(crate) struct InfrastructureConditionChange {
     pub location_id: u32,
     pub kind: InfrastructureKind,
     pub condition: InfrastructureCondition,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InfrastructureProjectCompletion {
+    pub location_id: u32,
+    pub kind: InfrastructureKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +414,30 @@ impl ResourceStockpiles {
         self.common_materials = self.common_materials.saturating_add(other.common_materials);
         self.volatiles = self.volatiles.saturating_add(other.volatiles);
         self.rare_materials = self.rare_materials.saturating_add(other.rare_materials);
+    }
+
+    pub const fn can_cover(&self, other: &Self) -> bool {
+        self.common_materials >= other.common_materials
+            && self.volatiles >= other.volatiles
+            && self.rare_materials >= other.rare_materials
+    }
+
+    pub const fn is_zero(&self) -> bool {
+        self.common_materials == 0 && self.volatiles == 0 && self.rare_materials == 0
+    }
+
+    pub fn spend_partial(&mut self, remaining_cost: &mut Self) {
+        let common_materials = self.common_materials.min(remaining_cost.common_materials);
+        self.common_materials -= common_materials;
+        remaining_cost.common_materials -= common_materials;
+
+        let volatiles = self.volatiles.min(remaining_cost.volatiles);
+        self.volatiles -= volatiles;
+        remaining_cost.volatiles -= volatiles;
+
+        let rare_materials = self.rare_materials.min(remaining_cost.rare_materials);
+        self.rare_materials -= rare_materials;
+        remaining_cost.rare_materials -= rare_materials;
     }
 }
 

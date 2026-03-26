@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{PlayerId, RelayStatus, SessionId, TickId};
+use crate::{InfrastructureKind, PlayerId, RelayStatus, SessionId, TickId};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CommandEnvelope {
@@ -32,6 +32,10 @@ pub enum CommandKind {
     SetRelayStatus {
         location_id: u32,
         relay_status: RelayStatus,
+    },
+    QueueInfrastructureRepair {
+        location_id: u32,
+        infrastructure_kind: InfrastructureKind,
     },
 }
 

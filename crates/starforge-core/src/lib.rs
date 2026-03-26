@@ -17,10 +17,10 @@ pub use snapshot::Snapshot;
 pub use state::{
     AgentAssignment, BuildCapacity, CommandCollapseState, EnergyPotential, GameState,
     HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition, InfrastructureKind,
-    InfrastructureSeed, InfrastructureState, LocationEconomyState, LocationKind, LocationState,
-    PlayerEconomyState, PlayerState, RelayStatus, ResourceRichness, ResourceStockpiles,
-    StrategicPosition, TerritoryState, ThreatLevel, ThroughputBudget, TrainingRunState,
-    TransitState, VictoryState, VisibilityState,
+    InfrastructureProjectKind, InfrastructureProjectState, InfrastructureSeed, InfrastructureState,
+    LocationEconomyState, LocationKind, LocationState, PlayerEconomyState, PlayerState,
+    RelayStatus, ResourceRichness, ResourceStockpiles, StrategicPosition, TerritoryState,
+    ThreatLevel, ThroughputBudget, TrainingRunState, TransitState, VictoryState, VisibilityState,
 };
 
 #[cfg(test)]
@@ -39,6 +39,13 @@ mod tests {
             tier: 1,
             starts_online: true,
             starts_damaged: false,
+        }
+    }
+
+    fn damaged_infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
+        InfrastructureSeed {
+            starts_damaged: true,
+            ..infrastructure_seed(kind)
         }
     }
 
@@ -129,6 +136,69 @@ mod tests {
 
         ScenarioConfig {
             starting_locations: vec![homeworld],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn degraded_datacenter_scenario() -> ScenarioConfig {
+        let mut homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        if let Some(datacenter) = homeworld
+            .starting_infrastructure
+            .iter_mut()
+            .find(|seed| seed.kind == InfrastructureKind::Datacenter)
+        {
+            datacenter.starts_damaged = true;
+        }
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn connected_remote_repair_scenario() -> ScenarioConfig {
+        let homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        let remote = StartingLocation {
+            location_id: 2,
+            name: "Outpost".to_owned(),
+            kind: LocationKind::BarrenWorld,
+            resource_richness: ResourceRichness::Sparse,
+            energy_potential: EnergyPotential::Moderate,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Peripheral,
+            territory: TerritoryState::Owned,
+            controller: Some(PlayerId::new(1)),
+            homeworld_of: None,
+            relay_status: RelayStatus::Connected,
+            orbital_slots: 1,
+            has_environmental_hazard: false,
+            starting_infrastructure: vec![
+                infrastructure_seed(InfrastructureKind::RelayUplink),
+                infrastructure_seed(InfrastructureKind::EnergyProducer),
+                damaged_infrastructure_seed(InfrastructureKind::Datacenter),
+            ],
+            hostile_remnant: None,
+        };
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld, remote],
+            connections: vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 20,
+            }],
             ..ScenarioConfig::test_fixture()
         }
     }
@@ -888,6 +958,132 @@ mod tests {
                 condition: InfrastructureCondition::Offline,
             }
         )));
+    }
+
+    #[test]
+    fn repair_projects_spend_stockpiles_and_restore_degraded_capacity() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            degraded_datacenter_scenario(),
+        );
+
+        assert_eq!(session.state().players[0].throughput.available, 25);
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::QueueInfrastructureRepair {
+                    location_id: 1,
+                    infrastructure_kind: InfrastructureKind::Datacenter,
+                },
+            })
+            .expect("repair should be accepted");
+
+        assert_eq!(
+            session.state().locations[0].stockpiles,
+            ResourceStockpiles {
+                common_materials: 460,
+                volatiles: 110,
+                rare_materials: 56,
+            }
+        );
+        assert_eq!(
+            session.state().locations[0].infrastructure_projects.len(),
+            1
+        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InfrastructureRepairQueued {
+                location_id: 1,
+                kind: InfrastructureKind::Datacenter,
+                duration_ticks: 2,
+                cost,
+            } if *cost == ResourceStockpiles {
+                common_materials: 40,
+                volatiles: 10,
+                rare_materials: 4,
+            }
+        )));
+
+        session.advance_tick();
+        assert_eq!(session.state().players[0].throughput.available, 25);
+        assert_eq!(
+            session.state().locations[0].infrastructure_projects.len(),
+            1
+        );
+
+        session.advance_tick();
+
+        let datacenter = session.state().locations[0]
+            .infrastructure
+            .iter()
+            .find(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
+            .expect("datacenter should be present");
+        assert_eq!(datacenter.condition, InfrastructureCondition::Operational);
+        assert_eq!(session.state().players[0].throughput.available, 50);
+        assert!(
+            session.state().locations[0]
+                .infrastructure_projects
+                .is_empty()
+        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InfrastructureRepairCompleted {
+                location_id: 1,
+                kind: InfrastructureKind::Datacenter,
+            }
+        )));
+    }
+
+    #[test]
+    fn connected_repairs_can_draw_from_empire_stockpiles() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            connected_remote_repair_scenario(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::QueueInfrastructureRepair {
+                    location_id: 2,
+                    infrastructure_kind: InfrastructureKind::Datacenter,
+                },
+            })
+            .expect("connected repair should be accepted");
+
+        assert_eq!(
+            session.state().players[0].economy.connected_stockpiles,
+            ResourceStockpiles {
+                common_materials: 520,
+                volatiles: 120,
+                rare_materials: 56,
+            }
+        );
+        assert_eq!(
+            session.state().locations[1].stockpiles,
+            ResourceStockpiles {
+                common_materials: 20,
+                volatiles: 0,
+                rare_materials: 0,
+            }
+        );
+        assert_eq!(
+            session.state().locations[0].stockpiles,
+            ResourceStockpiles {
+                common_materials: 500,
+                volatiles: 120,
+                rare_materials: 56,
+            }
+        );
     }
 
     #[test]
