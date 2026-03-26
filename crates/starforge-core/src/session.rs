@@ -139,13 +139,24 @@ impl GameSession {
         let completions = self.state.advance_infrastructure_projects();
         if !completions.is_empty() {
             for completion in completions {
+                let kind = match completion.project_kind {
+                    InfrastructureProjectKind::Repair { .. } => {
+                        EventKind::InfrastructureRepairCompleted {
+                            location_id: completion.location_id,
+                            kind: completion.kind,
+                        }
+                    }
+                    InfrastructureProjectKind::Construction { .. } => {
+                        EventKind::InfrastructureConstructionCompleted {
+                            location_id: completion.location_id,
+                            kind: completion.kind,
+                        }
+                    }
+                };
                 self.event_log.push(EventRecord {
                     tick_id: self.state.tick_id,
                     player_id: None,
-                    kind: EventKind::InfrastructureRepairCompleted {
-                        location_id: completion.location_id,
-                        kind: completion.kind,
-                    },
+                    kind,
                 });
             }
 
@@ -301,6 +312,14 @@ impl GameSession {
             } => {
                 self.apply_queue_infrastructure_repair(player_id, location_id, infrastructure_kind)
             }
+            CommandKind::QueueInfrastructureConstruction {
+                location_id,
+                infrastructure_kind,
+            } => self.apply_queue_infrastructure_construction(
+                player_id,
+                location_id,
+                infrastructure_kind,
+            ),
         };
 
         match applied {
@@ -570,6 +589,114 @@ impl GameSession {
         }])
     }
 
+    fn apply_queue_infrastructure_construction(
+        &mut self,
+        player_id: PlayerId,
+        location_id: u32,
+        infrastructure_kind: InfrastructureKind,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        if !is_buildable_infrastructure(&infrastructure_kind) {
+            return Err(ValidationError {
+                code: "unsupported_construction_kind".to_owned(),
+                message: "construction is currently limited to core economic infrastructure"
+                    .to_owned(),
+            });
+        }
+
+        let (connected_to_empire, build_capacity, has_environmental_hazard) = {
+            let location = self.controlled_location_state(player_id, location_id)?;
+            if is_unique_infrastructure(&infrastructure_kind)
+                && (location
+                    .infrastructure
+                    .iter()
+                    .any(|infrastructure| infrastructure.kind == infrastructure_kind)
+                    || location.infrastructure_projects.iter().any(|project| {
+                        matches!(
+                            project.kind,
+                            InfrastructureProjectKind::Construction {
+                                infrastructure_kind: ref queued_kind,
+                            } if *queued_kind == infrastructure_kind
+                        )
+                    }))
+            {
+                return Err(ValidationError {
+                    code: "duplicate_unique_infrastructure".to_owned(),
+                    message:
+                        "unique infrastructure cannot be constructed more than once per location"
+                            .to_owned(),
+                });
+            }
+
+            (
+                location.economy.connected_to_empire,
+                location.build_capacity.clone(),
+                location.has_environmental_hazard,
+            )
+        };
+
+        let cost = construction_cost(&infrastructure_kind);
+        let duration_ticks = construction_duration(
+            build_capacity,
+            has_environmental_hazard,
+            &infrastructure_kind,
+        );
+
+        if connected_to_empire {
+            let available = self
+                .state
+                .players
+                .iter()
+                .find(|player| player.player_id == player_id)
+                .ok_or(ValidationError {
+                    code: "unknown_player".to_owned(),
+                    message: "command references a player that does not exist in the session"
+                        .to_owned(),
+                })?
+                .economy
+                .connected_stockpiles
+                .clone();
+            if !available.can_cover(&cost) {
+                return Err(ValidationError {
+                    code: "insufficient_materials".to_owned(),
+                    message: "connected stockpiles cannot cover the requested construction"
+                        .to_owned(),
+                });
+            }
+
+            self.spend_connected_stockpiles(player_id, location_id, &cost)?;
+        } else {
+            let location = self.controlled_location_state_mut(player_id, location_id)?;
+            if !location.stockpiles.can_cover(&cost) {
+                return Err(ValidationError {
+                    code: "insufficient_materials".to_owned(),
+                    message: "local stockpiles cannot cover the requested construction".to_owned(),
+                });
+            }
+
+            let mut remaining_cost = cost.clone();
+            location.stockpiles.spend_partial(&mut remaining_cost);
+        }
+
+        let location = self.controlled_location_state_mut(player_id, location_id)?;
+        location
+            .infrastructure_projects
+            .push(InfrastructureProjectState {
+                kind: InfrastructureProjectKind::Construction {
+                    infrastructure_kind: infrastructure_kind.clone(),
+                },
+                remaining_ticks: duration_ticks,
+                total_ticks: duration_ticks,
+            });
+        self.state.recompute_economy();
+
+        Ok(vec![EventKind::InfrastructureConstructionQueued {
+            location_id,
+            kind: infrastructure_kind,
+            duration_ticks,
+            cost,
+        }])
+    }
+
     fn player_state_mut(
         &mut self,
         player_id: PlayerId,
@@ -674,7 +801,7 @@ impl GameSession {
 
         Err(ValidationError {
             code: "insufficient_materials".to_owned(),
-            message: "connected stockpiles cannot cover the requested repair".to_owned(),
+            message: "connected stockpiles cannot cover the requested project".to_owned(),
         })
     }
 
@@ -800,4 +927,75 @@ fn repair_duration(
     let hazard_adjustment = if has_environmental_hazard { 1 } else { 0 };
 
     (base_duration + build_adjustment + hazard_adjustment).max(1) as u32
+}
+
+fn construction_cost(infrastructure_kind: &InfrastructureKind) -> ResourceStockpiles {
+    match infrastructure_kind {
+        InfrastructureKind::MiningSite => ResourceStockpiles {
+            common_materials: 70,
+            volatiles: 20,
+            rare_materials: 0,
+        },
+        InfrastructureKind::EnergyProducer => ResourceStockpiles {
+            common_materials: 90,
+            volatiles: 30,
+            rare_materials: 8,
+        },
+        InfrastructureKind::Datacenter => ResourceStockpiles {
+            common_materials: 80,
+            volatiles: 20,
+            rare_materials: 8,
+        },
+        InfrastructureKind::RelayUplink => ResourceStockpiles {
+            common_materials: 50,
+            volatiles: 15,
+            rare_materials: 4,
+        },
+        InfrastructureKind::CommandNexus
+        | InfrastructureKind::ShipyardRing
+        | InfrastructureKind::MilitaryWorks
+        | InfrastructureKind::GroundDefenseSite => ResourceStockpiles::default(),
+    }
+}
+
+fn construction_duration(
+    build_capacity: BuildCapacity,
+    has_environmental_hazard: bool,
+    infrastructure_kind: &InfrastructureKind,
+) -> u32 {
+    let base_duration: i32 = match infrastructure_kind {
+        InfrastructureKind::MiningSite => 3,
+        InfrastructureKind::EnergyProducer => 4,
+        InfrastructureKind::Datacenter => 4,
+        InfrastructureKind::RelayUplink => 3,
+        InfrastructureKind::CommandNexus
+        | InfrastructureKind::ShipyardRing
+        | InfrastructureKind::MilitaryWorks
+        | InfrastructureKind::GroundDefenseSite => 0,
+    };
+    let build_adjustment = match build_capacity {
+        BuildCapacity::Constrained => 1,
+        BuildCapacity::Standard => 0,
+        BuildCapacity::Expansive => -1,
+    };
+    let hazard_adjustment = if has_environmental_hazard { 1 } else { 0 };
+
+    (base_duration + build_adjustment + hazard_adjustment).max(1) as u32
+}
+
+const fn is_buildable_infrastructure(infrastructure_kind: &InfrastructureKind) -> bool {
+    matches!(
+        infrastructure_kind,
+        InfrastructureKind::MiningSite
+            | InfrastructureKind::EnergyProducer
+            | InfrastructureKind::Datacenter
+            | InfrastructureKind::RelayUplink
+    )
+}
+
+const fn is_unique_infrastructure(infrastructure_kind: &InfrastructureKind) -> bool {
+    matches!(
+        infrastructure_kind,
+        InfrastructureKind::CommandNexus | InfrastructureKind::RelayUplink
+    )
 }

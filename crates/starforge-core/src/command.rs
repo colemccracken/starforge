@@ -37,6 +37,10 @@ pub enum CommandKind {
         location_id: u32,
         infrastructure_kind: InfrastructureKind,
     },
+    QueueInfrastructureConstruction {
+        location_id: u32,
+        infrastructure_kind: InfrastructureKind,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

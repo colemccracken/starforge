@@ -203,6 +203,46 @@ mod tests {
         }
     }
 
+    fn connected_remote_construction_scenario() -> ScenarioConfig {
+        let homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        let remote = StartingLocation {
+            location_id: 2,
+            name: "Outpost".to_owned(),
+            kind: LocationKind::BarrenWorld,
+            resource_richness: ResourceRichness::Sparse,
+            energy_potential: EnergyPotential::Moderate,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Peripheral,
+            territory: TerritoryState::Owned,
+            controller: Some(PlayerId::new(1)),
+            homeworld_of: None,
+            relay_status: RelayStatus::Connected,
+            orbital_slots: 1,
+            has_environmental_hazard: false,
+            starting_infrastructure: vec![
+                infrastructure_seed(InfrastructureKind::RelayUplink),
+                infrastructure_seed(InfrastructureKind::EnergyProducer),
+            ],
+            hostile_remnant: None,
+        };
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld, remote],
+            connections: vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 20,
+            }],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
     #[test]
     fn new_session_starts_at_tick_zero() {
         let session = GameSession::new(
@@ -1040,6 +1080,75 @@ mod tests {
     }
 
     #[test]
+    fn construction_projects_spend_stockpiles_and_expand_throughput() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            economy_fixture_scenario(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::QueueInfrastructureConstruction {
+                    location_id: 1,
+                    infrastructure_kind: InfrastructureKind::Datacenter,
+                },
+            })
+            .expect("construction should be accepted");
+
+        assert_eq!(
+            session.state().locations[0].stockpiles,
+            ResourceStockpiles {
+                common_materials: 420,
+                volatiles: 100,
+                rare_materials: 52,
+            }
+        );
+        assert_eq!(
+            session.state().locations[0].infrastructure_projects.len(),
+            1
+        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InfrastructureConstructionQueued {
+                location_id: 1,
+                kind: InfrastructureKind::Datacenter,
+                duration_ticks: 3,
+                cost,
+            } if *cost == ResourceStockpiles {
+                common_materials: 80,
+                volatiles: 20,
+                rare_materials: 8,
+            }
+        )));
+
+        session.advance_tick();
+        session.advance_tick();
+        assert_eq!(session.state().players[0].throughput.available, 50);
+
+        session.advance_tick();
+
+        let datacenter_count = session.state().locations[0]
+            .infrastructure
+            .iter()
+            .filter(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
+            .count();
+        assert_eq!(datacenter_count, 2);
+        assert_eq!(session.state().players[0].throughput.available, 60);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InfrastructureConstructionCompleted {
+                location_id: 1,
+                kind: InfrastructureKind::Datacenter,
+            }
+        )));
+    }
+
+    #[test]
     fn connected_repairs_can_draw_from_empire_stockpiles() {
         let mut session = GameSession::new(
             SessionId::new(1),
@@ -1084,6 +1193,65 @@ mod tests {
                 rare_materials: 56,
             }
         );
+    }
+
+    #[test]
+    fn connected_construction_can_draw_from_empire_stockpiles() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            connected_remote_construction_scenario(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::QueueInfrastructureConstruction {
+                    location_id: 2,
+                    infrastructure_kind: InfrastructureKind::Datacenter,
+                },
+            })
+            .expect("connected construction should be accepted");
+
+        assert_eq!(
+            session.state().players[0].economy.connected_stockpiles,
+            ResourceStockpiles {
+                common_materials: 480,
+                volatiles: 110,
+                rare_materials: 52,
+            }
+        );
+        assert_eq!(
+            session.state().locations[1].stockpiles,
+            ResourceStockpiles {
+                common_materials: 0,
+                volatiles: 0,
+                rare_materials: 0,
+            }
+        );
+        assert_eq!(
+            session.state().locations[0].stockpiles,
+            ResourceStockpiles {
+                common_materials: 480,
+                volatiles: 110,
+                rare_materials: 52,
+            }
+        );
+
+        for _ in 0..4 {
+            session.advance_tick();
+        }
+
+        let remote_datacenter_count = session.state().locations[1]
+            .infrastructure
+            .iter()
+            .filter(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
+            .count();
+        assert_eq!(remote_datacenter_count, 1);
+        assert_eq!(session.state().players[0].throughput.available, 90);
     }
 
     #[test]

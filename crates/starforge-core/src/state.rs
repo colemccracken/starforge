@@ -144,9 +144,29 @@ impl GameState {
                                 infrastructure.wear = 0;
                                 completions.push(InfrastructureProjectCompletion {
                                     location_id: location.location_id,
-                                    kind: infrastructure_kind,
+                                    kind: infrastructure_kind.clone(),
+                                    project_kind: InfrastructureProjectKind::Repair {
+                                        infrastructure_kind,
+                                    },
                                 });
                             }
+                        }
+                        InfrastructureProjectKind::Construction {
+                            infrastructure_kind,
+                        } => {
+                            location.infrastructure.push(InfrastructureState {
+                                kind: infrastructure_kind.clone(),
+                                tier: 1,
+                                condition: InfrastructureCondition::Operational,
+                                wear: 0,
+                            });
+                            completions.push(InfrastructureProjectCompletion {
+                                location_id: location.location_id,
+                                kind: infrastructure_kind.clone(),
+                                project_kind: InfrastructureProjectKind::Construction {
+                                    infrastructure_kind,
+                                },
+                            });
                         }
                     }
                 } else {
@@ -341,6 +361,9 @@ pub enum InfrastructureProjectKind {
     Repair {
         infrastructure_kind: InfrastructureKind,
     },
+    Construction {
+        infrastructure_kind: InfrastructureKind,
+    },
 }
 
 impl From<InfrastructureSeed> for InfrastructureState {
@@ -373,6 +396,7 @@ pub(crate) struct InfrastructureConditionChange {
 pub(crate) struct InfrastructureProjectCompletion {
     pub location_id: u32,
     pub kind: InfrastructureKind,
+    pub project_kind: InfrastructureProjectKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

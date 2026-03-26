@@ -72,4 +72,14 @@ pub enum EventKind {
         location_id: u32,
         kind: InfrastructureKind,
     },
+    InfrastructureConstructionQueued {
+        location_id: u32,
+        kind: InfrastructureKind,
+        duration_ticks: u32,
+        cost: ResourceStockpiles,
+    },
+    InfrastructureConstructionCompleted {
+        location_id: u32,
+        kind: InfrastructureKind,
+    },
 }
