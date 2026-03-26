@@ -1,17 +1,17 @@
 # Starforge Implementation Plan
 
-Status: Active plan; Milestones 1-4 complete, Milestone 5 in progress, first playable CLI prototype available  
+Status: Active plan; Milestones 1-4 complete, Milestone 5 substantially complete, ascension prototype validated  
 Last Updated: 2026-03-26  
 Source of Truth: [STARFORGE_REFERENCE.md](STARFORGE_REFERENCE.md)  
 Current Milestone: Movement, intel, and control  
-Current Focus: Stabilize the new file-backed playable prototype while continuing to extend movement/control into a fuller strategic loop.
+Current Focus: Carry the validated ascension prototype forward by locking remaining movement/intel details and beginning the military/conquest slice.
 
 ## Current Execution State
 
 - Current milestone: Movement, intel, and control
-- Current next action: Use the playable CLI prototype to validate the survey -> pacify -> claim -> build/repair -> train loop, then resume the planned sequence by deciding whether the next slice should be prototype hardening or the first military/conquest systems.
+- Current next action: Update the prototype from ascension-only to dual-path play by starting Milestone 6 military systems, beginning with reusable transport or fleet movement and contested-world state transitions.
 - Blockers: None currently identified.
-- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then completed the simulation-foundation milestone by implementing deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore and replay reconstruction support, added in-memory plus JSON snapshot round-trip tests, replaced the placeholder command path with deterministic throughput and agent-assignment mutations, added seeded RNG state with persistence and regression coverage in `starforge-core`, introduced structured command and domain event payloads, added deterministic location and relay mutations, added a save/load continuation equivalence regression, completed the world-and-content milestone by replacing placeholder YAML parsing in `starforge-content` with typed ruleset and scenario documents, generating deterministic homeworld and neutral starting locations from content data, wiring `GameSession` bootstrap to honor generated starting locations from `ScenarioConfig`, adding file-backed scenario harness loading plus session instantiation in `starforge-scenarios`, adding typed planetary attributes and deterministic location connections so scenarios carry a basic solar-system topology into session state, completing the economy-and-infrastructure milestone by adding runtime infrastructure state, computed energy and datacenter throughput, relay isolation effects, economy-driven throughput budget validation, seeded stockpile initialization, per-location extraction output computation, connected stockpile aggregation, tick-based extraction accumulation, deterministic infrastructure wear thresholds, condition-change events, automatic economy degradation as infrastructure falls into degraded or offline states, repair queues that consume local or connected stockpiles, and construction queues for new economic infrastructure that expand throughput and extraction capacity over time, then advancing the movement-intel milestone with player-scoped location projections, observed versus stale visibility tracking, route-based survey transit with deterministic ETA and arrival behavior, a player-scoped event feed that exposes only the events a player should currently be allowed to see, generic pacification and claim expeditions, prototype ascension training tiers through terminal tier-five victory, and a file-backed CLI that can create sessions, inspect maps and events, step ticks, queue expeditions, manage infrastructure, and drive the prototype loop end to end.
+- Recently completed: Bootstrapped the Rust workspace, added the six planned crates, created baseline tooling with `Makefile`, added placeholder content and scenario files, then completed the simulation-foundation milestone by implementing deterministic pending-command scheduling, persisted replay and pending command data in snapshots, added snapshot restore and replay reconstruction support, added in-memory plus JSON snapshot round-trip tests, replaced the placeholder command path with deterministic throughput and agent-assignment mutations, added seeded RNG state with persistence and regression coverage in `starforge-core`, introduced structured command and domain event payloads, added deterministic location and relay mutations, added a save/load continuation equivalence regression, completed the world-and-content milestone by replacing placeholder YAML parsing in `starforge-content` with typed ruleset and scenario documents, generating deterministic homeworld and neutral starting locations from content data, wiring `GameSession` bootstrap to honor generated starting locations from `ScenarioConfig`, adding file-backed scenario harness loading plus session instantiation in `starforge-scenarios`, adding typed planetary attributes and deterministic location connections so scenarios carry a basic solar-system topology into session state, completing the economy-and-infrastructure milestone by adding runtime infrastructure state, computed energy and datacenter throughput, relay isolation effects, economy-driven throughput budget validation, seeded stockpile initialization, per-location extraction output computation, connected stockpile aggregation, tick-based extraction accumulation, deterministic infrastructure wear thresholds, condition-change events, automatic economy degradation as infrastructure falls into degraded or offline states, repair queues that consume local or connected stockpiles, construction queues for new economic infrastructure that expand throughput and extraction capacity over time, and deterministic duplicate-repair targeting for repeated infrastructure kinds, then advancing the movement-intel milestone with player-scoped location projections, observed versus stale visibility tracking, route-based survey transit with deterministic ETA and arrival behavior, a player-scoped event feed that exposes only the events a player should currently be allowed to see, generic pacification and claim expeditions, prototype ascension training tiers through terminal tier-five victory, and a file-backed CLI that can create sessions, inspect maps and events, step ticks, queue expeditions, manage infrastructure, and drive the prototype loop end to end. The ascension path has now been proven in a full playtest from fresh session to tier-five victory.
 
 ## Purpose
 
@@ -348,6 +348,7 @@ Implement travel, scouting, fog of war, and player-scoped visibility projections
 - Two players querying the same session can receive different state views legitimately.
 - Contested worlds expose major actions but hide disallowed local details outside direct sensor coverage.
 - Stale intel behaves predictably after observation ends.
+- The prototype survey -> pacify -> claim loop is playable through CLI control on a seeded skirmish.
 
 **Risks**
 
@@ -358,6 +359,7 @@ Implement travel, scouting, fog of war, and player-scoped visibility projections
 
 - Centralize visibility filtering instead of scattering it across systems.
 - Lock the contested-world projection schema before the API contract is declared stable.
+- Current state: survey transit, stale or observed visibility, player-scoped event feeds, pacification expeditions, and claim expeditions are implemented; contested-world projection is still the largest unfinished part of this milestone.
 
 ### 6. Military and Victory
 
@@ -430,6 +432,7 @@ Implement technology, training, model tiers, and non-LLM agent behavior sufficie
 - Training meaningfully competes with automation and research for compute.
 - Agents improve scale and responsiveness without bypassing authority boundaries.
 - The fifth superintelligent state ends the match immediately.
+- A full ascension run can be completed from a fresh session under deterministic CLI control.
 
 **Risks**
 
@@ -440,6 +443,7 @@ Implement technology, training, model tiers, and non-LLM agent behavior sufficie
 
 - Start with deterministic placeholder policies before real model inference.
 - Keep authority checks in the command layer, not in individual agent implementations.
+- Current state: training tiers 2 through 5, throughput reservation, and the terminal ascension victory path are implemented; research branches and broader agent orchestration are still missing.
 
 ### 8. Engine-Managed Local Inference
 
@@ -507,6 +511,7 @@ Turn the engine into a stable local product surface for humans, scripts, and tes
 - Both empires can be driven end to end through API or CLI.
 - State and event endpoints respect player visibility rules.
 - Metrics are sufficient to debug tick, replay, and inference issues.
+- Before the HTTP API exists, the temporary file-backed CLI must remain good enough to exercise the playable prototype and validate high-level game flow.
 
 **Risks**
 
@@ -517,6 +522,7 @@ Turn the engine into a stable local product surface for humans, scripts, and tes
 
 - Keep the CLI thin.
 - Prefer schema-tested request and response models.
+- Current state: the CLI is intentionally file-backed as a prototype surface and supports session creation, stepping, inspection, expeditions, infrastructure management, and training. The HTTP API crate is still scaffolding and remains the main gap in this milestone.
 
 ### 10. Hardening and Balance Harness
 
@@ -562,11 +568,11 @@ Make the implementation stable enough to support iterative balance and future UI
 | Determinism | Repeated run of the same seed and command log yields identical state hash and event stream | Simulation foundation, Hardening and balance harness |
 | Save/load and replay | Restored sessions continue identically to uninterrupted sessions | Simulation foundation, Hardening and balance harness |
 | Economy behavior | Throughput crises from power or datacenter failures throttle correctly; relay cuts isolate worlds and remove advanced automation | Economy and infrastructure, Hardening and balance harness |
-| Visibility correctness | Contested worlds reveal major actions only; stale and observed information states project correctly by player | Movement, intel, and control; API and CLI productization; Hardening and balance harness |
+| Visibility correctness | Surveyed, observed, stale, and obscured information states project correctly by player; contested worlds still need field-level validation for the major-actions-only rule | Movement, intel, and control; API and CLI productization; Hardening and balance harness |
 | Combat and conquest | Hostile remnant expansion can fail if underprepared; captured worlds transfer damaged infrastructure; destroyed worlds remain unusable | World and content pipeline, Military and victory, Hardening and balance harness |
-| Victory resolution | Ascension can be interrupted by contest, relay loss, or throughput loss; no-draw enforcement always resolves to one winner | Military and victory, Hardening and balance harness |
+| Victory resolution | Ascension victory can be completed from a fresh session under deterministic control; later military work must add interruption rules and no-draw enforcement | Military and victory, Progression and agents, Hardening and balance harness |
 | Inference safety | Model-backed agents emit validated commands only; timeouts and invalid outputs degrade safely without halting the sim | Engine-managed local inference, Hardening and balance harness |
-| API and CLI control | Both empires can be driven headlessly through API or CLI without a built-in bot | API and CLI productization, Hardening and balance harness |
+| API and CLI control | The current file-backed CLI can drive the full ascension prototype headlessly; later HTTP API work must reach equivalent control coverage for both empires | API and CLI productization, Hardening and balance harness |
 
 ## Open Implementation Questions
 
