@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 )]
 pub struct MatchSeed(pub u64);
 
+impl MatchSeed {
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]

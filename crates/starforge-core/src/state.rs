@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{PlayerId, TickId};
+use crate::{MatchSeed, PlayerId, TickId};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameState {
     pub tick_id: TickId,
+    pub rng_state: u64,
     pub players: Vec<PlayerState>,
     pub locations: Vec<LocationState>,
     pub transits: Vec<TransitState>,
@@ -12,14 +13,25 @@ pub struct GameState {
 }
 
 impl GameState {
-    pub fn new(player_ids: Vec<PlayerId>) -> Self {
+    pub fn new(player_ids: Vec<PlayerId>, seed: MatchSeed) -> Self {
         Self {
             tick_id: TickId::default(),
+            rng_state: seed.as_u64(),
             players: player_ids.into_iter().map(PlayerState::new).collect(),
             locations: Vec::new(),
             transits: Vec::new(),
             victory: VictoryState::Ongoing,
         }
+    }
+
+    pub fn next_random_u64(&mut self) -> u64 {
+        self.rng_state = self.rng_state.wrapping_add(0x9e3779b97f4a7c15);
+
+        let mut z = self.rng_state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+
+        z ^ (z >> 31)
     }
 }
 

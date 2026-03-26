@@ -22,8 +22,8 @@ pub use state::{
 #[cfg(test)]
 mod tests {
     use crate::{
-        CommandEnvelope, CommandKind, EventKind, GameConfig, GameSession, PlayerId, ScenarioConfig,
-        SessionId, TickId,
+        CommandEnvelope, CommandKind, EventKind, GameConfig, GameSession, MatchSeed, PlayerId,
+        ScenarioConfig, SessionId, TickId,
     };
 
     #[test]
@@ -411,6 +411,57 @@ mod tests {
         advanced.advance_tick();
         advanced.advance_tick();
         assert_eq!(advanced.state().players[0].throughput.available, 32);
+    }
+
+    #[test]
+    fn same_seed_produces_same_random_sequence() {
+        let scenario = ScenarioConfig::default();
+        let mut session_a =
+            GameSession::new(SessionId::new(1), GameConfig::default(), scenario.clone());
+        let mut session_b = GameSession::new(SessionId::new(2), GameConfig::default(), scenario);
+
+        let first_a = session_a.next_random_u64();
+        let second_a = session_a.next_random_u64();
+        let first_b = session_b.next_random_u64();
+        let second_b = session_b.next_random_u64();
+
+        assert_eq!(first_a, first_b);
+        assert_eq!(second_a, second_b);
+    }
+
+    #[test]
+    fn different_seeds_produce_different_state_hashes() {
+        let session_a = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+        let session_b = GameSession::new(
+            SessionId::new(2),
+            GameConfig::default(),
+            ScenarioConfig {
+                seed: MatchSeed(7),
+                ..ScenarioConfig::default()
+            },
+        );
+
+        assert_ne!(session_a.state_hash(), session_b.state_hash());
+    }
+
+    #[test]
+    fn snapshot_restore_preserves_rng_sequence() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ScenarioConfig::default(),
+        );
+
+        let _ = session.next_random_u64();
+        let snapshot = session.snapshot_json().expect("snapshot should serialize");
+        let mut restored =
+            GameSession::from_snapshot_json(&snapshot).expect("snapshot should deserialize");
+
+        assert_eq!(session.next_random_u64(), restored.next_random_u64());
     }
 
     #[test]

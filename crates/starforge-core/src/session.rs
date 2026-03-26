@@ -17,6 +17,7 @@ pub struct GameSession {
 impl GameSession {
     pub fn new(session_id: SessionId, config: GameConfig, scenario: ScenarioConfig) -> Self {
         let player_ids = scenario.player_ids.clone();
+        let seed = scenario.seed;
         let event_log = vec![EventRecord {
             tick_id: Default::default(),
             player_id: None,
@@ -27,7 +28,7 @@ impl GameSession {
             session_id,
             config,
             scenario,
-            state: GameState::new(player_ids),
+            state: GameState::new(player_ids, seed),
             event_log,
             replay_log: ReplayLog::default(),
             pending_commands: Vec::new(),
@@ -109,6 +110,10 @@ impl GameSession {
 
     pub fn pending_commands(&self) -> &[CommandEnvelope] {
         &self.pending_commands
+    }
+
+    pub fn next_random_u64(&mut self) -> u64 {
+        self.state.next_random_u64()
     }
 
     pub fn advance_tick(&mut self) {
