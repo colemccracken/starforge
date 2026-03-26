@@ -3,10 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use starforge_content::{
-    ContentError, compile_game_config, compile_scenario_config, load_ruleset_document,
-    load_scenario_document,
-};
+use starforge_content::{ContentError, load_compiled_scenario};
 use starforge_core::{GameConfig, GameSession, ScenarioConfig, SessionId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,17 +52,14 @@ pub fn load_harness(
 ) -> Result<ScenarioHarness, ScenarioHarnessError> {
     let ruleset_path = ruleset_path.as_ref().to_path_buf();
     let scenario_path = scenario_path.as_ref().to_path_buf();
-    let ruleset = load_ruleset_document(&ruleset_path)?;
-    let scenario = load_scenario_document(&scenario_path)?;
-    let game_config = compile_game_config(&ruleset);
-    let scenario_config = compile_scenario_config(&ruleset, &scenario)?;
+    let compiled = load_compiled_scenario(&ruleset_path, &scenario_path)?;
 
     Ok(ScenarioHarness {
-        name: scenario.name,
+        name: compiled.scenario_config.name.clone(),
         ruleset_path,
         scenario_path,
-        game_config,
-        scenario_config,
+        game_config: compiled.game_config,
+        scenario_config: compiled.scenario_config,
     })
 }
 

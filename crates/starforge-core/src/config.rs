@@ -55,14 +55,20 @@ pub struct LocationConnection {
     pub travel_time_ticks: u32,
 }
 
-impl Default for ScenarioConfig {
-    fn default() -> Self {
+impl ScenarioConfig {
+    pub fn test_fixture() -> Self {
         Self {
-            name: "starter_skirmish".to_owned(),
+            name: "test_fixture".to_owned(),
             player_ids: vec![PlayerId::new(1), PlayerId::new(2)],
             seed: MatchSeed(42),
             starting_locations: Vec::new(),
             connections: Vec::new(),
         }
+    }
+}
+
+impl Default for ScenarioConfig {
+    fn default() -> Self {
+        Self::test_fixture()
     }
 }

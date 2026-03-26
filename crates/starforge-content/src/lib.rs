@@ -38,6 +38,12 @@ impl From<serde_yaml::Error> for ContentError {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledScenario {
+    pub game_config: GameConfig,
+    pub scenario_config: ScenarioConfig,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RulesetDocument {
     pub name: String,
@@ -96,6 +102,15 @@ pub fn load_scenario_document(path: impl AsRef<Path>) -> Result<ScenarioDocument
     parse_scenario_document(&input).map_err(ContentError::from)
 }
 
+pub fn load_compiled_scenario(
+    ruleset_path: impl AsRef<Path>,
+    scenario_path: impl AsRef<Path>,
+) -> Result<CompiledScenario, ContentError> {
+    let ruleset = load_ruleset_document(ruleset_path)?;
+    let scenario = load_scenario_document(scenario_path)?;
+    compile_scenario_bundle(&ruleset, &scenario)
+}
+
 pub fn compile_game_config(ruleset: &RulesetDocument) -> GameConfig {
     GameConfig {
         max_players: ruleset.players.max_players,
@@ -103,31 +118,33 @@ pub fn compile_game_config(ruleset: &RulesetDocument) -> GameConfig {
     }
 }
 
-pub fn compile_scenario_config(
+pub fn compile_scenario_bundle(
     ruleset: &RulesetDocument,
     scenario: &ScenarioDocument,
-) -> Result<ScenarioConfig, ContentError> {
+) -> Result<CompiledScenario, ContentError> {
     validate_documents(ruleset, scenario)?;
 
     let starting_locations =
         generate_starting_locations(&ruleset.world, &scenario.players, scenario.seed)?;
     let connections = generate_location_connections(&starting_locations, scenario.seed)?;
 
-    Ok(ScenarioConfig {
-        name: scenario.name.clone(),
-        player_ids: scenario.players.iter().map(|player| player.id).collect(),
-        seed: scenario.seed,
-        starting_locations,
-        connections,
+    Ok(CompiledScenario {
+        game_config: compile_game_config(ruleset),
+        scenario_config: ScenarioConfig {
+            name: scenario.name.clone(),
+            player_ids: scenario.players.iter().map(|player| player.id).collect(),
+            seed: scenario.seed,
+            starting_locations,
+            connections,
+        },
     })
 }
 
-pub fn default_game_config() -> GameConfig {
-    GameConfig::default()
-}
-
-pub fn starter_scenario() -> ScenarioConfig {
-    ScenarioConfig::default()
+pub fn compile_scenario_config(
+    ruleset: &RulesetDocument,
+    scenario: &ScenarioDocument,
+) -> Result<ScenarioConfig, ContentError> {
+    compile_scenario_bundle(ruleset, scenario).map(|compiled| compiled.scenario_config)
 }
 
 fn validate_documents(
@@ -649,7 +666,8 @@ impl SeededRng {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentError, compile_scenario_config, parse_ruleset_document, parse_scenario_document,
+        ContentError, compile_scenario_bundle, compile_scenario_config, parse_ruleset_document,
+        parse_scenario_document,
     };
     use starforge_core::{
         BuildCapacity, EnergyPotential, LocationKind, RelayStatus, ResourceRichness, TerritoryState,
@@ -698,13 +716,15 @@ players:
         let scenario = parse_scenario_document(SCENARIO_YAML).expect("scenario should parse");
 
         let compiled =
-            compile_scenario_config(&ruleset, &scenario).expect("scenario should compile");
+            compile_scenario_bundle(&ruleset, &scenario).expect("scenario should compile");
+        let scenario_config = compiled.scenario_config;
 
-        assert_eq!(compiled.player_ids.len(), 2);
-        assert!((18..=24).contains(&compiled.starting_locations.len()));
-        assert!(compiled.connections.len() >= compiled.starting_locations.len());
+        assert_eq!(compiled.game_config.max_players, 2);
+        assert_eq!(scenario_config.player_ids.len(), 2);
+        assert!((18..=24).contains(&scenario_config.starting_locations.len()));
+        assert!(scenario_config.connections.len() >= scenario_config.starting_locations.len());
 
-        let homeworlds: Vec<_> = compiled
+        let homeworlds: Vec<_> = scenario_config
             .starting_locations
             .iter()
             .filter(|location| location.homeworld_of.is_some())
@@ -723,19 +743,19 @@ players:
         }));
 
         assert!(
-            compiled
+            scenario_config
                 .starting_locations
                 .iter()
                 .any(|location| location.territory == TerritoryState::Neutral)
         );
         assert!(
-            compiled
+            scenario_config
                 .starting_locations
                 .iter()
                 .filter(|location| location.hostile_remnant_present)
                 .all(|location| location.territory == TerritoryState::Neutral)
         );
-        assert!(compiled.connections.iter().all(|connection| {
+        assert!(scenario_config.connections.iter().all(|connection| {
             connection.from_location_id < connection.to_location_id
                 && connection.travel_time_ticks > 0
         }));
