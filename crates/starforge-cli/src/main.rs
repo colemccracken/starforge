@@ -11,7 +11,8 @@ use serde::de::DeserializeOwned;
 use starforge_api::{ApiSessionSummary, IssueCommandRequest, StepSessionRequest};
 use starforge_core::{
     CommandCollapseState, CommandKind, EventRecord, GameSession, InfrastructureCondition,
-    LocationView, PlayerId, PlayerStateView, SessionId, TickId, TransitKind, VictoryState,
+    LocationConnection, LocationView, PlayerId, PlayerStateView, SessionId, TickId, TransitKind,
+    VictoryState,
 };
 use starforge_scenarios::starter_skirmish_harness;
 
@@ -339,7 +340,7 @@ fn cmd_map(session_path: &Path, player_id: PlayerId) -> Result<(), DynError> {
     }
     println!();
     println!("Reachable routes from currently known worlds:");
-    for route in render_known_routes(&session, &view.locations) {
+    for route in render_known_routes(&view.routes) {
         println!("  {route}");
     }
 
@@ -458,7 +459,9 @@ fn cmd_map_api(api_base: &str, session_arg: &Path, player_id: PlayerId) -> Resul
     }
     println!();
     println!("Reachable routes from currently known worlds:");
-    println!("  unavailable via API-backed CLI until route projection is exposed");
+    for route in render_known_routes(&view.routes) {
+        println!("  {route}");
+    }
     Ok(())
 }
 
@@ -765,21 +768,9 @@ fn first_recommended_route(session: &GameSession, player_id: PlayerId) -> Option
     fallback
 }
 
-fn render_known_routes(session: &GameSession, locations: &[LocationView]) -> Vec<String> {
-    let known_location_ids: Vec<u32> = locations
+fn render_known_routes(routes: &[LocationConnection]) -> Vec<String> {
+    routes
         .iter()
-        .filter(|location| location.visibility != starforge_core::LocationVisibility::Obscured)
-        .map(|location| location.location_id)
-        .collect();
-
-    session
-        .state()
-        .connections
-        .iter()
-        .filter(|connection| {
-            known_location_ids.contains(&connection.from_location_id)
-                || known_location_ids.contains(&connection.to_location_id)
-        })
         .map(|connection| {
             format!(
                 "{} <-> {} (eta {})",

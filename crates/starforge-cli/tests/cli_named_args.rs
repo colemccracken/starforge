@@ -195,3 +195,32 @@ fn api_mode_can_create_and_query_a_remote_session() {
         .stdout(predicate::str::contains("Session: #1 @"))
         .stdout(predicate::str::contains("Player: P1"));
 }
+
+#[test]
+fn api_mode_map_shows_known_routes() {
+    let api_base = spawn_api_server();
+
+    cli_command()
+        .args(["--api-base", &api_base, "new"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created remote session #1"));
+
+    cli_command()
+        .args([
+            "--api-base",
+            &api_base,
+            "map",
+            "--session",
+            "1",
+            "--player",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Reachable routes from currently known worlds:",
+        ))
+        .stdout(predicate::str::contains("<->"))
+        .stdout(predicate::str::contains("unavailable via API-backed CLI").not());
+}

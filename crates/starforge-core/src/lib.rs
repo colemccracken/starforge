@@ -1833,6 +1833,28 @@ mod tests {
     }
 
     #[test]
+    fn player_view_projects_routes_from_known_worlds() {
+        let session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            survey_fixture_scenario(),
+        );
+
+        let player_view = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should be available");
+
+        assert_eq!(
+            player_view.routes,
+            vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 12,
+            }]
+        );
+    }
+
+    #[test]
     fn survey_transit_reveals_location_on_arrival_then_intel_goes_stale() {
         let mut session = GameSession::new(
             SessionId::new(1),

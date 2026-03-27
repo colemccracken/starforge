@@ -1,10 +1,12 @@
+use std::collections::BTreeSet;
+
 use crate::{
     BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, EventRecord,
     GameConfig, GameState, InfrastructureCondition, InfrastructureKind, InfrastructureProjectKind,
-    InfrastructureProjectState, LocationKind, LocationState, LocationView, LocationVisibility,
-    PlayerId, PlayerStateView, RelayStatus, ReplayLog, ResourceRichness, ResourceStockpiles,
-    ScenarioConfig, SessionId, Snapshot, StrategicPosition, TerritoryState, TickId, TransitKind,
-    TransitState, TransitView, ValidationError,
+    InfrastructureProjectState, LocationConnection, LocationKind, LocationState, LocationView,
+    LocationVisibility, PlayerId, PlayerStateView, RelayStatus, ReplayLog, ResourceRichness,
+    ResourceStockpiles, ScenarioConfig, SessionId, Snapshot, StrategicPosition, TerritoryState,
+    TickId, TransitKind, TransitState, TransitView, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -375,12 +377,13 @@ impl GameSession {
 
     pub fn player_view(&self, player_id: PlayerId) -> Result<PlayerStateView, ValidationError> {
         let player = self.player_state(player_id)?;
-        let locations = self
+        let locations: Vec<LocationView> = self
             .state
             .locations
             .iter()
             .map(|location| project_location_for_player(location, player_id, &player.visibility))
             .collect();
+        let routes = project_routes_for_player(&self.state.connections, &locations);
         let transits = self
             .state
             .transits
@@ -399,6 +402,7 @@ impl GameSession {
             collapse: player.collapse.clone(),
             visibility: player.visibility.clone(),
             locations,
+            routes,
             transits,
         })
     }
@@ -2625,6 +2629,26 @@ fn project_location_for_player(
         stockpiles: None,
         hostile_remnant_present: None,
     }
+}
+
+fn project_routes_for_player(
+    connections: &[LocationConnection],
+    locations: &[LocationView],
+) -> Vec<LocationConnection> {
+    let known_location_ids: BTreeSet<u32> = locations
+        .iter()
+        .filter(|location| location.visibility != LocationVisibility::Obscured)
+        .map(|location| location.location_id)
+        .collect();
+
+    connections
+        .iter()
+        .filter(|connection| {
+            known_location_ids.contains(&connection.from_location_id)
+                || known_location_ids.contains(&connection.to_location_id)
+        })
+        .cloned()
+        .collect()
 }
 
 fn project_transit_for_player(transit: &TransitState) -> TransitView {

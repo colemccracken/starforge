@@ -409,6 +409,7 @@ pub struct PlayerStateView {
     pub collapse: CommandCollapseState,
     pub visibility: VisibilityState,
     pub locations: Vec<LocationView>,
+    pub routes: Vec<LocationConnection>,
     pub transits: Vec<TransitView>,
 }
 
