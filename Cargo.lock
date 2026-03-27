@@ -835,6 +835,7 @@ name = "starforge-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "serde",
  "serde_json",
  "starforge-content",
  "starforge-core",
