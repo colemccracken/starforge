@@ -7,7 +7,9 @@ use crate::{
     LocationState, LocationView, LocationVisibility, PlayerId, PlayerStateView, RelayStatus,
     ReplayLog, ResearchBranch, ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId,
     Snapshot, StrategicPosition, TerritoryState, TickId, TransitKind, TransitState, TransitView,
-    ValidationError,
+    ValidationError, buildable_infrastructure_kinds, construction_preview,
+    is_unique_infrastructure, repair_preview, research_preview, strategic_strike_cost,
+    training_preview,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -804,13 +806,15 @@ impl GameSession {
         };
         let industry_level = self.player_state(player_id)?.research.industry_level;
 
-        let cost = repair_cost(&infrastructure_kind, &condition, industry_level);
-        let duration_ticks = repair_duration(
+        let preview = repair_preview(
+            &infrastructure_kind,
+            &condition,
             build_capacity,
             has_environmental_hazard,
-            &condition,
             industry_level,
         );
+        let cost = preview.cost.clone();
+        let duration_ticks = preview.duration_ticks;
 
         if connected_to_empire {
             let available = self
@@ -874,7 +878,7 @@ impl GameSession {
         location_id: u32,
         infrastructure_kind: InfrastructureKind,
     ) -> Result<Vec<EventKind>, ValidationError> {
-        if !is_buildable_infrastructure(&infrastructure_kind) {
+        if !buildable_infrastructure_kinds().contains(&infrastructure_kind) {
             return Err(ValidationError {
                 code: "unsupported_construction_kind".to_owned(),
                 message: "construction kind is not currently supported".to_owned(),
@@ -913,13 +917,14 @@ impl GameSession {
         };
         let industry_level = self.player_state(player_id)?.research.industry_level;
 
-        let cost = construction_cost(&infrastructure_kind, industry_level);
-        let duration_ticks = construction_duration(
+        let preview = construction_preview(
+            &infrastructure_kind,
             build_capacity,
             has_environmental_hazard,
-            &infrastructure_kind,
             industry_level,
         );
+        let cost = preview.cost.clone();
+        let duration_ticks = preview.duration_ticks;
 
         if connected_to_empire {
             let available = self
@@ -1119,7 +1124,8 @@ impl GameSession {
             });
         }
 
-        let required_training_throughput = training_throughput_requirement(target_tier);
+        let preview = training_preview(target_tier, player.research.models_level);
+        let required_training_throughput = preview.required_throughput;
         if player.throughput.reserved_for_training < required_training_throughput {
             return Err(ValidationError {
                 code: "insufficient_training_budget".to_owned(),
@@ -1138,7 +1144,7 @@ impl GameSession {
                     && location.territory == TerritoryState::Owned
             })
             .count();
-        let minimum_worlds = minimum_worlds_for_tier(target_tier);
+        let minimum_worlds = preview.minimum_worlds;
         if owned_worlds < minimum_worlds {
             return Err(ValidationError {
                 code: "insufficient_owned_worlds".to_owned(),
@@ -1165,7 +1171,7 @@ impl GameSession {
         } else {
             None
         };
-        let required_ticks = training_duration_ticks(target_tier, player.research.models_level);
+        let required_ticks = preview.required_ticks;
         let player = self.player_state_mut(player_id)?;
         player.training = Some(crate::TrainingRunState {
             target_tier,
@@ -1221,7 +1227,8 @@ impl GameSession {
             });
         }
 
-        let required_research_throughput = research_throughput_requirement(target_level);
+        let preview = research_preview(target_level);
+        let required_research_throughput = preview.required_throughput;
         if player.throughput.reserved_for_research < required_research_throughput {
             return Err(ValidationError {
                 code: "insufficient_research_budget".to_owned(),
@@ -1239,7 +1246,7 @@ impl GameSession {
             });
         }
 
-        let required_ticks = research_duration_ticks(target_level);
+        let required_ticks = preview.required_ticks;
         let player = self.player_state_mut(player_id)?;
         player.research.active_project = Some(crate::ResearchProjectState {
             branch,
@@ -1890,8 +1897,12 @@ impl GameSession {
                     < training_snapshot.required_training_throughput;
             let insufficient_available_throughput = self.state.players[index].throughput.available
                 < training_snapshot.required_training_throughput;
-            let insufficient_worlds =
-                owned_count < minimum_worlds_for_tier(training_snapshot.target_tier);
+            let insufficient_worlds = owned_count
+                < training_preview(
+                    training_snapshot.target_tier,
+                    self.state.players[index].research.models_level,
+                )
+                .minimum_worlds;
 
             if training_snapshot.target_tier >= 5 {
                 let Some(location_id) = training_snapshot.ascension_site_location_id else {
@@ -3022,65 +3033,6 @@ fn ensure_colony_infrastructure(location: &mut LocationState) {
         .sort_by_key(|infrastructure| infrastructure.kind.clone());
 }
 
-fn training_throughput_requirement(target_tier: u8) -> u32 {
-    match target_tier {
-        2 => 20,
-        3 => 35,
-        4 => 50,
-        5 => 70,
-        _ => u32::MAX,
-    }
-}
-
-fn training_duration_ticks(target_tier: u8, models_level: u8) -> u32 {
-    let base_ticks = match target_tier {
-        2 => 32,
-        3 => 48,
-        4 => 72,
-        5 => 96,
-        _ => u32::MAX,
-    };
-    let modifier_percent = match models_level {
-        0 => 100,
-        1 => 90,
-        2 => 80,
-        _ => 70,
-    };
-
-    base_ticks
-        .saturating_mul(modifier_percent)
-        .saturating_div(100)
-        .max(1)
-}
-
-fn research_throughput_requirement(target_level: u8) -> u32 {
-    match target_level {
-        1 => 16,
-        2 => 24,
-        3 => 34,
-        _ => u32::MAX,
-    }
-}
-
-fn research_duration_ticks(target_level: u8) -> u32 {
-    match target_level {
-        1 => 8,
-        2 => 12,
-        3 => 16,
-        _ => u32::MAX,
-    }
-}
-
-fn minimum_worlds_for_tier(target_tier: u8) -> usize {
-    match target_tier {
-        2 => 1,
-        3 => 2,
-        4 => 3,
-        5 => 4,
-        _ => usize::MAX,
-    }
-}
-
 fn takeover_duration_ticks(
     attacker_id: PlayerId,
     defender_id: PlayerId,
@@ -3106,219 +3058,6 @@ const fn pacification_duration_ticks() -> u32 {
 
 const fn collapse_countdown_ticks(resilience_level: u8) -> u64 {
     8 + (resilience_level as u64) * 2
-}
-
-fn strategic_strike_cost(warfare_level: u8) -> ResourceStockpiles {
-    scale_cost_by_percent(
-        ResourceStockpiles {
-            common_materials: 120,
-            volatiles: 80,
-            rare_materials: 30,
-        },
-        100u32
-            .saturating_sub(u32::from(warfare_level).saturating_mul(10))
-            .max(70),
-    )
-}
-
-fn repair_cost(
-    infrastructure_kind: &InfrastructureKind,
-    condition: &InfrastructureCondition,
-    industry_level: u8,
-) -> ResourceStockpiles {
-    let base_cost = match infrastructure_kind {
-        InfrastructureKind::CommandNexus => ResourceStockpiles {
-            common_materials: 60,
-            volatiles: 20,
-            rare_materials: 10,
-        },
-        InfrastructureKind::MiningSite => ResourceStockpiles {
-            common_materials: 30,
-            volatiles: 10,
-            rare_materials: 0,
-        },
-        InfrastructureKind::EnergyProducer => ResourceStockpiles {
-            common_materials: 45,
-            volatiles: 15,
-            rare_materials: 4,
-        },
-        InfrastructureKind::Datacenter => ResourceStockpiles {
-            common_materials: 40,
-            volatiles: 10,
-            rare_materials: 4,
-        },
-        InfrastructureKind::RelayUplink => ResourceStockpiles {
-            common_materials: 25,
-            volatiles: 8,
-            rare_materials: 2,
-        },
-        InfrastructureKind::ShipyardRing => ResourceStockpiles {
-            common_materials: 70,
-            volatiles: 20,
-            rare_materials: 10,
-        },
-        InfrastructureKind::MilitaryWorks => ResourceStockpiles {
-            common_materials: 60,
-            volatiles: 16,
-            rare_materials: 8,
-        },
-        InfrastructureKind::GroundDefenseSite => ResourceStockpiles {
-            common_materials: 35,
-            volatiles: 10,
-            rare_materials: 4,
-        },
-    };
-
-    let multiplier = match condition {
-        InfrastructureCondition::Operational => 0,
-        InfrastructureCondition::Degraded => 1,
-        InfrastructureCondition::Offline => 2,
-    };
-
-    scale_cost_by_percent(
-        ResourceStockpiles {
-            common_materials: base_cost.common_materials.saturating_mul(multiplier),
-            volatiles: base_cost.volatiles.saturating_mul(multiplier),
-            rare_materials: base_cost.rare_materials.saturating_mul(multiplier),
-        },
-        100u32
-            .saturating_sub(u32::from(industry_level).saturating_mul(10))
-            .max(70),
-    )
-}
-
-fn repair_duration(
-    build_capacity: BuildCapacity,
-    has_environmental_hazard: bool,
-    condition: &InfrastructureCondition,
-    industry_level: u8,
-) -> u32 {
-    let base_duration: i32 = match condition {
-        InfrastructureCondition::Operational => 0,
-        InfrastructureCondition::Degraded => 3,
-        InfrastructureCondition::Offline => 5,
-    };
-    let build_adjustment = match build_capacity {
-        BuildCapacity::Constrained => 1,
-        BuildCapacity::Standard => 0,
-        BuildCapacity::Expansive => -1,
-    };
-    let hazard_adjustment = if has_environmental_hazard { 1 } else { 0 };
-    let industry_adjustment = -(i32::from(industry_level));
-
-    (base_duration + build_adjustment + hazard_adjustment + industry_adjustment).max(1) as u32
-}
-
-fn construction_cost(
-    infrastructure_kind: &InfrastructureKind,
-    industry_level: u8,
-) -> ResourceStockpiles {
-    let base_cost = match infrastructure_kind {
-        InfrastructureKind::MiningSite => ResourceStockpiles {
-            common_materials: 70,
-            volatiles: 20,
-            rare_materials: 0,
-        },
-        InfrastructureKind::EnergyProducer => ResourceStockpiles {
-            common_materials: 90,
-            volatiles: 30,
-            rare_materials: 8,
-        },
-        InfrastructureKind::Datacenter => ResourceStockpiles {
-            common_materials: 80,
-            volatiles: 20,
-            rare_materials: 8,
-        },
-        InfrastructureKind::RelayUplink => ResourceStockpiles {
-            common_materials: 50,
-            volatiles: 15,
-            rare_materials: 4,
-        },
-        InfrastructureKind::ShipyardRing => ResourceStockpiles {
-            common_materials: 120,
-            volatiles: 40,
-            rare_materials: 16,
-        },
-        InfrastructureKind::MilitaryWorks => ResourceStockpiles {
-            common_materials: 110,
-            volatiles: 35,
-            rare_materials: 12,
-        },
-        InfrastructureKind::GroundDefenseSite => ResourceStockpiles {
-            common_materials: 90,
-            volatiles: 30,
-            rare_materials: 10,
-        },
-        InfrastructureKind::CommandNexus => ResourceStockpiles::default(),
-    };
-
-    scale_cost_by_percent(
-        base_cost,
-        100u32
-            .saturating_sub(u32::from(industry_level).saturating_mul(10))
-            .max(70),
-    )
-}
-
-fn construction_duration(
-    build_capacity: BuildCapacity,
-    has_environmental_hazard: bool,
-    infrastructure_kind: &InfrastructureKind,
-    industry_level: u8,
-) -> u32 {
-    let base_duration: i32 = match infrastructure_kind {
-        InfrastructureKind::MiningSite => 3,
-        InfrastructureKind::EnergyProducer => 4,
-        InfrastructureKind::Datacenter => 4,
-        InfrastructureKind::RelayUplink => 3,
-        InfrastructureKind::ShipyardRing => 6,
-        InfrastructureKind::MilitaryWorks => 5,
-        InfrastructureKind::GroundDefenseSite => 5,
-        InfrastructureKind::CommandNexus => 0,
-    };
-    let build_adjustment = match build_capacity {
-        BuildCapacity::Constrained => 1,
-        BuildCapacity::Standard => 0,
-        BuildCapacity::Expansive => -1,
-    };
-    let hazard_adjustment = if has_environmental_hazard { 1 } else { 0 };
-    let industry_adjustment = -(i32::from(industry_level));
-
-    (base_duration + build_adjustment + hazard_adjustment + industry_adjustment).max(1) as u32
-}
-
-const fn is_buildable_infrastructure(infrastructure_kind: &InfrastructureKind) -> bool {
-    matches!(
-        infrastructure_kind,
-        InfrastructureKind::MiningSite
-            | InfrastructureKind::EnergyProducer
-            | InfrastructureKind::Datacenter
-            | InfrastructureKind::RelayUplink
-            | InfrastructureKind::ShipyardRing
-            | InfrastructureKind::MilitaryWorks
-            | InfrastructureKind::GroundDefenseSite
-    )
-}
-
-const fn is_unique_infrastructure(infrastructure_kind: &InfrastructureKind) -> bool {
-    matches!(
-        infrastructure_kind,
-        InfrastructureKind::CommandNexus | InfrastructureKind::RelayUplink
-    )
-}
-
-fn scale_cost_by_percent(cost: ResourceStockpiles, percent: u32) -> ResourceStockpiles {
-    ResourceStockpiles {
-        common_materials: cost
-            .common_materials
-            .saturating_mul(percent)
-            .saturating_div(100),
-        volatiles: cost.volatiles.saturating_mul(percent).saturating_div(100),
-        rare_materials: cost
-            .rare_materials
-            .saturating_mul(percent)
-            .saturating_div(100),
-    }
 }
 
 fn player_research_level_in_state(

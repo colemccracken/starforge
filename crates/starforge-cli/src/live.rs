@@ -27,16 +27,20 @@ use starforge_api::{
     PlayerFrameResponse, ReadySessionRequest, RunnerSpeedRequest, SessionInfoResponse, SessionMode,
     SessionPhase,
 };
-use starforge_core::{
-    CommandKind, LocationVisibility, PlayerId, RelayStatus, ResearchBranch, SessionId,
-};
+use starforge_core::{CommandKind, LocationVisibility, PlayerId, RelayStatus, SessionId};
 use tokio::{sync::mpsc, time::sleep};
 
 use crate::{
-    cli::{PlayerScopedCommand, parse_player_scoped_command},
+    cli::{PlayerEventsArgs, PlayerScopedCommand, parse_player_scoped_command},
     render::{
         format_stockpiles, render_collapse, render_event, render_location, render_map_lines,
-        render_research_branch, render_status_lines,
+        render_status_lines,
+    },
+    tui_actions::{
+        ActionFormState, ActionGroup, ActionId, FormSubmit, PaneFocus, action_by_id,
+        action_form_for_selected, action_index, default_selected_action_id, derive_actions,
+        event_history_custom_form, form_adjust_left, form_adjust_right, form_back, form_lines,
+        form_next, form_previous, form_title, rebuild_form, selected_form_message,
     },
 };
 
@@ -110,66 +114,28 @@ async fn tui_loop(
         tokio::select! {
             maybe_event = event_rx.recv() => {
                 let Some(event) = maybe_event else { break; };
-                match handle_event(&event, &mut state, &frame, player_id) {
+                match handle_event(&event, &mut state, &frame) {
                     Ok(Some(UiCommand::Quit)) => break,
                     Ok(Some(command)) => {
-                        if let Err(error) = apply_ui_command(
-                            client,
-                            session_id,
-                            player_id,
-                            &mut state,
-                            &mut frame,
-                            command,
-                        )
-                        .await
-                        {
-                            report_ui_error(&mut state, &*error);
-                            try_refresh_frame(
-                                client,
-                                session_id,
-                                player_id,
-                                &mut state,
-                                &mut frame,
-                            )
-                            .await;
-                        }
+                        apply_ui_command(client, session_id, player_id, &mut state, &mut frame, command).await;
                     }
                     Ok(None) => {}
-                    Err(error) => report_ui_error(&mut state, &*error),
+                    Err(error) => state.push_output(format!("Action failed: {error}")),
                 }
             }
             _ = sleep(Duration::from_millis(100)) => {
-                let updated = client.frame(session_id, player_id, frame.next_event_index).await?;
-                state.apply_frame(&updated);
-                frame = updated;
+                match client.frame(session_id, player_id, frame.next_event_index).await {
+                    Ok(updated) => {
+                        state.apply_frame(&updated);
+                        frame = updated;
+                    }
+                    Err(error) => state.push_output(format!("Action failed: {error}")),
+                }
             }
         }
     }
 
     Ok(())
-}
-
-fn report_ui_error(state: &mut TuiState, error: &dyn Error) {
-    state.push_output(format!("Error: {error}"));
-}
-
-async fn try_refresh_frame(
-    client: &ApiClient,
-    session_id: SessionId,
-    player_id: PlayerId,
-    state: &mut TuiState,
-    frame: &mut PlayerFrameResponse,
-) {
-    match client
-        .frame(session_id, player_id, frame.next_event_index)
-        .await
-    {
-        Ok(updated) => {
-            state.apply_frame(&updated);
-            *frame = updated;
-        }
-        Err(error) => report_ui_error(state, &*error),
-    }
 }
 
 fn spawn_event_thread(
@@ -188,29 +154,17 @@ fn spawn_event_thread(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FocusPane {
-    Map,
-    Overview,
-    Events,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ModalState {
-    CommandLine { input: String },
-    Build { input: String },
-    Repair { input: String },
-    Budget { input: String },
-    Research { input: String },
-    Train { input: String },
+    LegacyCommand { input: String },
+    ActionForm(ActionFormState),
     Help,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TuiState {
     pub(crate) selected_location_index: usize,
-    pub(crate) origin_location_id: Option<u32>,
-    pub(crate) target_location_id: Option<u32>,
-    pub(crate) focus: FocusPane,
+    pub(crate) selected_action_id: Option<ActionId>,
+    pub(crate) focus: PaneFocus,
     pub(crate) modal: Option<ModalState>,
     pub(crate) unread_alerts: Vec<PlayerAlert>,
     recent_events: Vec<String>,
@@ -221,9 +175,8 @@ impl TuiState {
     pub(crate) fn from_frame(frame: &PlayerFrameResponse) -> Self {
         let mut state = Self {
             selected_location_index: 0,
-            origin_location_id: None,
-            target_location_id: None,
-            focus: FocusPane::Overview,
+            selected_action_id: None,
+            focus: PaneFocus::Locations,
             modal: None,
             unread_alerts: Vec::new(),
             recent_events: Vec::new(),
@@ -236,29 +189,9 @@ impl TuiState {
     pub(crate) fn apply_frame(&mut self, frame: &PlayerFrameResponse) {
         if frame.view.locations.is_empty() {
             self.selected_location_index = 0;
-            self.target_location_id = None;
-            self.origin_location_id = None;
+            self.selected_action_id = None;
         } else if self.selected_location_index >= frame.view.locations.len() {
             self.selected_location_index = frame.view.locations.len().saturating_sub(1);
-        }
-
-        if let Some(origin) = self.origin_location_id
-            && !frame
-                .view
-                .locations
-                .iter()
-                .any(|location| location.location_id == origin)
-        {
-            self.origin_location_id = None;
-        }
-        if let Some(target) = self.target_location_id
-            && !frame
-                .view
-                .locations
-                .iter()
-                .any(|location| location.location_id == target)
-        {
-            self.target_location_id = None;
         }
 
         if !frame.events.is_empty() {
@@ -281,77 +214,91 @@ impl TuiState {
                 let drop_count = self.unread_alerts.len() - 20;
                 self.unread_alerts.drain(..drop_count);
             }
-            if let Some(location_id) = frame.alerts.iter().find_map(|alert| alert.location_id) {
-                self.target_location_id = Some(location_id);
-                if let Some(index) = frame
+            if let Some(location_id) = frame.alerts.iter().find_map(|alert| alert.location_id)
+                && let Some(index) = frame
                     .view
                     .locations
                     .iter()
                     .position(|location| location.location_id == location_id)
-                {
-                    self.selected_location_index = index;
-                }
+            {
+                self.selected_location_index = index;
             }
         }
+
+        self.reconcile_selected_action(frame);
     }
 
-    pub(crate) fn select_next(&mut self, location_count: usize) {
-        if location_count == 0 {
-            self.selected_location_index = 0;
-            return;
-        }
-
-        self.selected_location_index = (self.selected_location_index + 1) % location_count;
-    }
-
-    pub(crate) fn select_previous(&mut self, location_count: usize) {
-        if location_count == 0 {
+    pub(crate) fn select_next_location(&mut self, frame: &PlayerFrameResponse) {
+        if frame.view.locations.is_empty() {
             self.selected_location_index = 0;
             return;
         }
 
         self.selected_location_index =
-            (self.selected_location_index + location_count - 1) % location_count;
+            (self.selected_location_index + 1) % frame.view.locations.len();
+        self.reconcile_selected_action(frame);
     }
 
-    pub(crate) fn set_origin_from_selection(
-        &mut self,
-        frame: &PlayerFrameResponse,
-        player_id: PlayerId,
-    ) {
-        let Some(location) = frame.view.locations.get(self.selected_location_index) else {
+    pub(crate) fn select_previous_location(&mut self, frame: &PlayerFrameResponse) {
+        if frame.view.locations.is_empty() {
+            self.selected_location_index = 0;
             return;
-        };
-        if location.controller == Some(player_id)
-            && location.visibility == LocationVisibility::Owned
-        {
-            self.origin_location_id = Some(location.location_id);
-            self.push_output(format!("Origin set to #{}", location.location_id));
         }
+
+        self.selected_location_index = (self.selected_location_index + frame.view.locations.len()
+            - 1)
+            % frame.view.locations.len();
+        self.reconcile_selected_action(frame);
     }
 
-    pub(crate) fn set_target_from_selection(&mut self, frame: &PlayerFrameResponse) {
-        let Some(location) = frame.view.locations.get(self.selected_location_index) else {
+    pub(crate) fn select_next_action(&mut self, frame: &PlayerFrameResponse) {
+        let actions = derive_actions(frame, self.selected_location_index);
+        if actions.is_empty() {
+            self.selected_action_id = None;
             return;
-        };
-        self.target_location_id = Some(location.location_id);
-        self.push_output(format!("Target set to #{}", location.location_id));
+        }
+
+        let next_index = self
+            .selected_action_id
+            .and_then(|action_id| action_index(&actions, action_id))
+            .map(|index| (index + 1) % actions.len())
+            .unwrap_or(0);
+        self.selected_action_id = Some(actions[next_index].id);
     }
 
-    pub(crate) fn open_modal(&mut self, modal: ModalState) {
-        self.modal = Some(modal);
+    pub(crate) fn select_previous_action(&mut self, frame: &PlayerFrameResponse) {
+        let actions = derive_actions(frame, self.selected_location_index);
+        if actions.is_empty() {
+            self.selected_action_id = None;
+            return;
+        }
+
+        let previous_index = self
+            .selected_action_id
+            .and_then(|action_id| action_index(&actions, action_id))
+            .map(|index| (index + actions.len() - 1) % actions.len())
+            .unwrap_or(0);
+        self.selected_action_id = Some(actions[previous_index].id);
     }
 
     pub(crate) fn acknowledge_alerts(&mut self) {
         self.unread_alerts.clear();
     }
 
-    fn push_output(&mut self, line: String) {
+    pub(crate) fn push_output(&mut self, line: String) {
         self.output_lines.push(line);
-        if self.output_lines.len() > 8 {
-            let drop_count = self.output_lines.len() - 8;
+        if self.output_lines.len() > 12 {
+            let drop_count = self.output_lines.len() - 12;
             self.output_lines.drain(..drop_count);
         }
+    }
+
+    fn reconcile_selected_action(&mut self, frame: &PlayerFrameResponse) {
+        let actions = derive_actions(frame, self.selected_location_index);
+        self.selected_action_id = match self.selected_action_id {
+            Some(action_id) if action_by_id(&actions, action_id).is_some() => Some(action_id),
+            _ => default_selected_action_id(&actions),
+        };
     }
 }
 
@@ -363,14 +310,13 @@ enum UiCommand {
     TogglePause,
     SetSpeed(u64),
     ToggleRelay,
-    QuickCommand(PlayerScopedCommand),
+    SubmitForm(ActionFormState, FormSubmit),
 }
 
 fn handle_event(
     event: &Event,
     state: &mut TuiState,
     frame: &PlayerFrameResponse,
-    player_id: PlayerId,
 ) -> Result<Option<UiCommand>, DynError> {
     let Event::Key(key) = event else {
         return Ok(None);
@@ -381,102 +327,68 @@ fn handle_event(
     }
 
     if let Some(modal) = state.modal.take() {
-        let (command, next_modal) = handle_modal_key(key, modal)?;
-        state.modal = next_modal;
-        return Ok(command);
+        return handle_modal_key(key, state, frame, modal);
     }
 
-    let location_count = frame.view.locations.len();
     match key.code {
         KeyCode::Char('q') => Ok(Some(UiCommand::Quit)),
+        KeyCode::Tab => {
+            state.focus = match state.focus {
+                PaneFocus::Locations => PaneFocus::Actions,
+                PaneFocus::Actions => PaneFocus::Locations,
+            };
+            Ok(None)
+        }
+        KeyCode::BackTab => {
+            state.focus = match state.focus {
+                PaneFocus::Locations => PaneFocus::Actions,
+                PaneFocus::Actions => PaneFocus::Locations,
+            };
+            Ok(None)
+        }
         KeyCode::Up => {
-            state.select_previous(location_count);
+            match state.focus {
+                PaneFocus::Locations => state.select_previous_location(frame),
+                PaneFocus::Actions => state.select_previous_action(frame),
+            }
             Ok(None)
         }
         KeyCode::Down => {
-            state.select_next(location_count);
-            Ok(None)
-        }
-        KeyCode::Char('o') => {
-            state.set_origin_from_selection(frame, player_id);
-            Ok(None)
-        }
-        KeyCode::Enter => {
-            state.set_target_from_selection(frame);
-            Ok(None)
-        }
-        KeyCode::Char('s') => quick_hotkey_command(state, PlayerScopedCommand::Survey),
-        KeyCode::Char('p') => quick_hotkey_command(state, PlayerScopedCommand::Pacify),
-        KeyCode::Char('c') => quick_hotkey_command(state, PlayerScopedCommand::Claim),
-        KeyCode::Char('a') => quick_hotkey_command(state, PlayerScopedCommand::Assault),
-        KeyCode::Char('x') => quick_hotkey_command(state, PlayerScopedCommand::Strike),
-        KeyCode::Char('b') => {
-            if let Some(location_id) = selected_location_id(frame, state) {
-                state.open_modal(ModalState::Build {
-                    input: format!("build --location {} --kind ", location_id),
-                });
+            match state.focus {
+                PaneFocus::Locations => state.select_next_location(frame),
+                PaneFocus::Actions => state.select_next_action(frame),
             }
             Ok(None)
         }
-        KeyCode::Char('r') => {
-            if let Some(location_id) = selected_location_id(frame, state) {
-                state.open_modal(ModalState::Repair {
-                    input: format!("repair --location {} --kind ", location_id),
-                });
+        KeyCode::Enter => match state.focus {
+            PaneFocus::Locations => {
+                state.focus = PaneFocus::Actions;
+                Ok(None)
             }
-            Ok(None)
-        }
-        KeyCode::Char('u') => {
-            state.open_modal(ModalState::Budget {
-                input: format!(
-                    "budget --upkeep {} --research {} --training {} --agents {}",
-                    frame.view.throughput.reserved_for_model_upkeep,
-                    frame.view.throughput.reserved_for_research,
-                    frame.view.throughput.reserved_for_training,
-                    frame.view.throughput.reserved_for_agents
-                ),
-            });
-            Ok(None)
-        }
-        KeyCode::Char('g') => {
-            state.open_modal(ModalState::Research {
-                input: default_research_command(frame),
-            });
-            Ok(None)
-        }
-        KeyCode::Char('t') => {
-            let next_tier = frame.view.model_tier.saturating_add(1);
-            state.open_modal(ModalState::Train {
-                input: format!("train --target-tier {}", next_tier),
-            });
-            Ok(None)
-        }
-        KeyCode::Char('l') => Ok(Some(UiCommand::ToggleRelay)),
-        KeyCode::Char('m') => {
-            state.focus = FocusPane::Map;
-            Ok(None)
-        }
-        KeyCode::Char('e') => {
-            state.focus = FocusPane::Events;
-            Ok(None)
-        }
-        KeyCode::Char('i') => {
-            state.focus = FocusPane::Overview;
-            Ok(None)
-        }
+            PaneFocus::Actions => activate_selected_action(state, frame),
+        },
+        KeyCode::Char('s') => activate_action_by_id(ActionId::Survey, state, frame),
+        KeyCode::Char('p') => activate_action_by_id(ActionId::Pacify, state, frame),
+        KeyCode::Char('c') => activate_action_by_id(ActionId::Claim, state, frame),
+        KeyCode::Char('a') => activate_action_by_id(ActionId::Assault, state, frame),
+        KeyCode::Char('x') => activate_action_by_id(ActionId::Strike, state, frame),
+        KeyCode::Char('b') => activate_action_by_id(ActionId::Build, state, frame),
+        KeyCode::Char('r') => activate_action_by_id(ActionId::Repair, state, frame),
+        KeyCode::Char('u') => activate_action_by_id(ActionId::Budget, state, frame),
+        KeyCode::Char('g') => activate_action_by_id(ActionId::Research, state, frame),
+        KeyCode::Char('t') => activate_action_by_id(ActionId::Training, state, frame),
+        KeyCode::Char('l') => activate_action_by_id(ActionId::Relay, state, frame),
         KeyCode::Char(':') => {
-            state.open_modal(ModalState::CommandLine {
+            state.modal = Some(ModalState::LegacyCommand {
                 input: String::new(),
             });
             Ok(None)
         }
         KeyCode::Char('?') => {
-            state.open_modal(ModalState::Help);
+            state.modal = Some(ModalState::Help);
             Ok(None)
         }
         KeyCode::Esc => {
-            state.origin_location_id = None;
-            state.target_location_id = None;
             state.acknowledge_alerts();
             Ok(None)
         }
@@ -491,102 +403,161 @@ fn handle_event(
 
 fn handle_modal_key(
     key: &KeyEvent,
-    mut modal: ModalState,
-) -> Result<(Option<UiCommand>, Option<ModalState>), DynError> {
-    match &mut modal {
+    state: &mut TuiState,
+    frame: &PlayerFrameResponse,
+    modal: ModalState,
+) -> Result<Option<UiCommand>, DynError> {
+    match modal {
         ModalState::Help => match key.code {
-            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => Ok((None, None)),
-            _ => Ok((None, Some(modal))),
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => Ok(None),
+            _ => {
+                state.modal = Some(ModalState::Help);
+                Ok(None)
+            }
         },
-        ModalState::CommandLine { input }
-        | ModalState::Build { input }
-        | ModalState::Repair { input }
-        | ModalState::Budget { input }
-        | ModalState::Research { input }
-        | ModalState::Train { input } => match key.code {
-            KeyCode::Esc => Ok((None, None)),
+        ModalState::LegacyCommand { mut input } => match key.code {
+            KeyCode::Esc => Ok(None),
             KeyCode::Backspace => {
                 input.pop();
-                Ok((None, Some(modal)))
+                state.modal = Some(ModalState::LegacyCommand { input });
+                Ok(None)
             }
             KeyCode::Enter => {
                 let command_text = input.trim().to_owned();
                 if command_text.is_empty() {
-                    return Ok((None, None));
+                    return Ok(None);
                 }
-                let command = parse_player_scoped_command(&command_text)?;
-                match command {
-                    PlayerScopedCommand::Events(args) => {
-                        Ok((Some(UiCommand::RefreshAllEvents(args.from_tick)), None))
+                match parse_player_scoped_command(&command_text) {
+                    Ok(PlayerScopedCommand::Events(args)) => {
+                        Ok(Some(UiCommand::RefreshAllEvents(args.from_tick)))
                     }
-                    parsed => Ok((Some(UiCommand::ExecuteParsed(parsed)), None)),
+                    Ok(parsed) => Ok(Some(UiCommand::ExecuteParsed(parsed))),
+                    Err(error) => {
+                        state.push_output(format!("Action failed: {error}"));
+                        state.modal = Some(ModalState::LegacyCommand { input });
+                        Ok(None)
+                    }
                 }
             }
             KeyCode::Char(character) => {
                 input.push(character);
-                Ok((None, Some(modal)))
+                state.modal = Some(ModalState::LegacyCommand { input });
+                Ok(None)
             }
-            _ => Ok((None, Some(modal))),
+            _ => {
+                state.modal = Some(ModalState::LegacyCommand { input });
+                Ok(None)
+            }
+        },
+        ModalState::ActionForm(mut form) => match key.code {
+            KeyCode::Esc => {
+                state.modal = form_back(&form).map(ModalState::ActionForm);
+                Ok(None)
+            }
+            KeyCode::Up => {
+                form_previous(&mut form);
+                state.modal = Some(ModalState::ActionForm(form));
+                Ok(None)
+            }
+            KeyCode::Down => {
+                form_next(&mut form);
+                state.modal = Some(ModalState::ActionForm(form));
+                Ok(None)
+            }
+            KeyCode::Left => {
+                form_adjust_left(&mut form);
+                state.modal = Some(ModalState::ActionForm(form));
+                Ok(None)
+            }
+            KeyCode::Right => {
+                form_adjust_right(&mut form);
+                state.modal = Some(ModalState::ActionForm(form));
+                Ok(None)
+            }
+            KeyCode::Enter => {
+                if let Some(rebuilt) = rebuild_form(&form, frame) {
+                    form = rebuilt;
+                }
+                match crate::tui_actions::submit_form(&form, frame) {
+                    Ok(FormSubmit::OpenCustomEventHistory(from_tick)) => {
+                        state.modal =
+                            Some(ModalState::ActionForm(event_history_custom_form(from_tick)));
+                        Ok(None)
+                    }
+                    Ok(submit) => {
+                        state.modal = Some(ModalState::ActionForm(form.clone()));
+                        Ok(Some(UiCommand::SubmitForm(form, submit)))
+                    }
+                    Err(reason) => {
+                        state.push_output(format!("Action failed: {reason}"));
+                        state.modal = Some(ModalState::ActionForm(form));
+                        Ok(None)
+                    }
+                }
+            }
+            _ => {
+                state.modal = Some(ModalState::ActionForm(form));
+                Ok(None)
+            }
         },
     }
 }
 
-fn build_quick_command(
-    state: &TuiState,
-    builder: fn(crate::cli::TransitSpec) -> PlayerScopedCommand,
-) -> Option<UiCommand> {
-    let (Some(origin), Some(target)) = (state.origin_location_id, state.target_location_id) else {
-        return None;
-    };
-
-    Some(UiCommand::QuickCommand(builder(crate::cli::TransitSpec {
-        origin,
-        destination: target,
-    })))
-}
-
-fn quick_hotkey_command(
+fn activate_selected_action(
     state: &mut TuiState,
-    builder: fn(crate::cli::TransitSpec) -> PlayerScopedCommand,
+    frame: &PlayerFrameResponse,
 ) -> Result<Option<UiCommand>, DynError> {
-    if let Some(command) = build_quick_command(state, builder) {
-        Ok(Some(command))
+    if let Some(action_id) = state.selected_action_id {
+        activate_action_by_id(action_id, state, frame)
     } else {
-        state.push_output(
-            "Set both an origin and a target before using expedition hotkeys".to_owned(),
-        );
         Ok(None)
     }
 }
 
-fn selected_location_id(frame: &PlayerFrameResponse, state: &TuiState) -> Option<u32> {
-    frame
-        .view
-        .locations
-        .get(state.selected_location_index)
-        .map(|location| location.location_id)
-}
+fn activate_action_by_id(
+    action_id: ActionId,
+    state: &mut TuiState,
+    frame: &PlayerFrameResponse,
+) -> Result<Option<UiCommand>, DynError> {
+    let actions = derive_actions(frame, state.selected_location_index);
+    let Some(action) = action_by_id(&actions, action_id) else {
+        return Ok(None);
+    };
 
-fn default_research_command(frame: &PlayerFrameResponse) -> String {
-    let candidates = [
-        (ResearchBranch::Industry, frame.view.research.industry_level),
-        (ResearchBranch::Models, frame.view.research.models_level),
-        (ResearchBranch::Warfare, frame.view.research.warfare_level),
-        (
-            ResearchBranch::Resilience,
-            frame.view.research.resilience_level,
-        ),
-    ];
-    let (branch, current_level) = candidates
-        .into_iter()
-        .min_by_key(|(_, level)| *level)
-        .expect("research branches should always be available");
+    state.selected_action_id = Some(action.id);
+    if let Some(reason) = action.availability.reason() {
+        state.push_output(format!("Action failed: {reason}"));
+        return Ok(None);
+    }
 
-    format!(
-        "research --branch {} --target-level {}",
-        render_research_branch(branch),
-        current_level.saturating_add(1)
-    )
+    if action.opens_form {
+        if let Some(form) =
+            action_form_for_selected(action.id, frame, state.selected_location_index)
+        {
+            state.modal = Some(ModalState::ActionForm(form));
+        }
+        return Ok(None);
+    }
+
+    match action.id {
+        ActionId::Status => Ok(Some(UiCommand::ExecuteParsed(PlayerScopedCommand::Status))),
+        ActionId::Map => Ok(Some(UiCommand::ExecuteParsed(PlayerScopedCommand::Map))),
+        ActionId::Ready => Ok(Some(UiCommand::ToggleReady)),
+        ActionId::PauseResume => Ok(Some(UiCommand::TogglePause)),
+        ActionId::Relay => Ok(Some(UiCommand::ToggleRelay)),
+        ActionId::Events
+        | ActionId::Budget
+        | ActionId::Research
+        | ActionId::Training
+        | ActionId::Speed
+        | ActionId::Survey
+        | ActionId::Pacify
+        | ActionId::Claim
+        | ActionId::Assault
+        | ActionId::Strike
+        | ActionId::Build
+        | ActionId::Repair => Ok(None),
+    }
 }
 
 async fn apply_ui_command(
@@ -596,111 +567,226 @@ async fn apply_ui_command(
     state: &mut TuiState,
     frame: &mut PlayerFrameResponse,
     command: UiCommand,
-) -> Result<(), DynError> {
+) {
     match command {
         UiCommand::Quit => {}
-        UiCommand::ExecuteParsed(parsed) | UiCommand::QuickCommand(parsed) => {
-            execute_player_scoped_command(client, session_id, player_id, state, frame, parsed)
-                .await?;
+        UiCommand::ExecuteParsed(parsed) => {
+            if let Err(error) =
+                execute_player_scoped_command(client, session_id, player_id, state, frame, parsed)
+                    .await
+            {
+                state.push_output(format!("Action failed: {error}"));
+                refresh_after_failure(client, session_id, player_id, state, frame).await;
+            }
         }
         UiCommand::RefreshAllEvents(from_tick) => {
-            let full_frame = client.frame(session_id, player_id, 0).await?;
-            state.push_output(format!("Visible events from tick {from_tick}:"));
-            let filtered = full_frame
-                .events
-                .iter()
-                .filter(|event| event.record.tick_id.0 >= from_tick)
-                .map(|event| {
-                    format!(
-                        "[{}] {}",
-                        event.record.tick_id.0,
-                        render_event(&event.record.kind)
-                    )
-                })
-                .collect::<Vec<_>>();
-            if filtered.is_empty() {
-                state.push_output(format!("No visible events from tick {from_tick}"));
-            } else {
-                for line in filtered.into_iter().take(6) {
-                    state.push_output(line);
-                }
+            if let Err(error) =
+                refresh_all_events(client, session_id, player_id, state, frame, from_tick).await
+            {
+                state.push_output(format!("Action failed: {error}"));
+                refresh_after_failure(client, session_id, player_id, state, frame).await;
             }
-            state.apply_frame(&full_frame);
-            *frame = full_frame;
         }
         UiCommand::ToggleReady => {
-            if frame.runner.phase == SessionPhase::Lobby {
-                let is_ready = frame
-                    .seats
-                    .iter()
-                    .find(|seat| seat.player_id == player_id)
-                    .map(|seat| seat.ready)
-                    .unwrap_or(false);
-                client.set_ready(session_id, player_id, !is_ready).await?;
-                state.push_output(if is_ready {
-                    "Marked not ready".to_owned()
-                } else {
-                    "Marked ready".to_owned()
-                });
-                let updated = client
-                    .frame(session_id, player_id, frame.next_event_index)
-                    .await?;
-                state.apply_frame(&updated);
-                *frame = updated;
+            if let Err(error) = toggle_ready(client, session_id, player_id, state, frame).await {
+                state.push_output(format!("Action failed: {error}"));
+                refresh_after_failure(client, session_id, player_id, state, frame).await;
             }
         }
         UiCommand::TogglePause => {
-            if frame.runner.mode == SessionMode::Sandbox {
-                if frame.runner.paused {
-                    client.run_session(session_id).await?;
-                    state.push_output("Sandbox session resumed".to_owned());
-                } else {
-                    client.pause_session(session_id).await?;
-                    state.push_output("Sandbox session paused".to_owned());
-                }
-                let updated = client
-                    .frame(session_id, player_id, frame.next_event_index)
-                    .await?;
-                state.apply_frame(&updated);
-                *frame = updated;
+            if let Err(error) = toggle_pause(client, session_id, state, frame).await {
+                state.push_output(format!("Action failed: {error}"));
+                refresh_after_failure(client, session_id, player_id, state, frame).await;
             }
         }
         UiCommand::SetSpeed(speed) => {
-            if frame.runner.mode == SessionMode::Sandbox {
-                client.set_speed(session_id, speed).await?;
-                state.push_output(format!("Tick speed set to {} ms", speed));
-                let updated = client
-                    .frame(session_id, player_id, frame.next_event_index)
-                    .await?;
-                state.apply_frame(&updated);
-                *frame = updated;
+            if let Err(error) = set_speed(client, session_id, state, frame, speed).await {
+                state.push_output(format!("Action failed: {error}"));
+                refresh_after_failure(client, session_id, player_id, state, frame).await;
             }
         }
         UiCommand::ToggleRelay => {
-            if let Some(location) = frame.view.locations.get(state.selected_location_index)
-                && let Some(relay_status) = &location.relay_status
-            {
-                let new_status = match relay_status {
-                    RelayStatus::Connected => RelayStatus::Disconnected,
-                    RelayStatus::Disconnected => RelayStatus::Connected,
-                };
-                execute_player_scoped_command(
-                    client,
-                    session_id,
-                    player_id,
-                    state,
-                    frame,
-                    PlayerScopedCommand::Relay(crate::cli::ScopedRelayArgs {
-                        location: location.location_id,
-                        status: new_status,
-                    }),
-                )
-                .await?;
+            if let Err(error) = toggle_relay(client, session_id, player_id, state, frame).await {
+                state.push_output(format!("Action failed: {error}"));
+                refresh_after_failure(client, session_id, player_id, state, frame).await;
+            }
+        }
+        UiCommand::SubmitForm(form, submit) => {
+            let result = match submit {
+                FormSubmit::Command(command) => {
+                    execute_player_scoped_command(
+                        client, session_id, player_id, state, frame, command,
+                    )
+                    .await
+                }
+                FormSubmit::RefreshEvents(from_tick) => {
+                    refresh_all_events(client, session_id, player_id, state, frame, from_tick).await
+                }
+                FormSubmit::OpenCustomEventHistory(_) => Ok(()),
+                FormSubmit::SetSpeed(speed) => {
+                    set_speed(client, session_id, state, frame, speed).await
+                }
+            };
+
+            match result {
+                Ok(()) => state.modal = None,
+                Err(error) => {
+                    state.push_output(format!("Action failed: {error}"));
+                    state.modal = rebuild_form(&form, frame).map(ModalState::ActionForm);
+                    if state.modal.is_none() {
+                        state.modal = Some(ModalState::ActionForm(form));
+                    }
+                    refresh_after_failure(client, session_id, player_id, state, frame).await;
+                }
             }
         }
     }
+}
 
+async fn refresh_all_events(
+    client: &ApiClient,
+    session_id: SessionId,
+    player_id: PlayerId,
+    state: &mut TuiState,
+    frame: &mut PlayerFrameResponse,
+    from_tick: u64,
+) -> Result<(), DynError> {
+    let full_frame = client.frame(session_id, player_id, 0).await?;
+    state.push_output(format!("Visible events from tick {from_tick}:"));
+    let filtered = full_frame
+        .events
+        .iter()
+        .filter(|event| event.record.tick_id.0 >= from_tick)
+        .map(|event| {
+            format!(
+                "[{}] {}",
+                event.record.tick_id.0,
+                render_event(&event.record.kind)
+            )
+        })
+        .collect::<Vec<_>>();
+    if filtered.is_empty() {
+        state.push_output(format!("No visible events from tick {from_tick}"));
+    } else {
+        for line in filtered.into_iter().take(6) {
+            state.push_output(line);
+        }
+    }
+    state.apply_frame(&full_frame);
+    *frame = full_frame;
     Ok(())
+}
+
+async fn toggle_ready(
+    client: &ApiClient,
+    session_id: SessionId,
+    player_id: PlayerId,
+    state: &mut TuiState,
+    frame: &mut PlayerFrameResponse,
+) -> Result<(), DynError> {
+    let is_ready = frame
+        .seats
+        .iter()
+        .find(|seat| seat.player_id == player_id)
+        .map(|seat| seat.ready)
+        .unwrap_or(false);
+    client.set_ready(session_id, player_id, !is_ready).await?;
+    state.push_output(if is_ready {
+        "Marked not ready".to_owned()
+    } else {
+        "Marked ready".to_owned()
+    });
+    let updated = client
+        .frame(session_id, player_id, frame.next_event_index)
+        .await?;
+    state.apply_frame(&updated);
+    *frame = updated;
+    Ok(())
+}
+
+async fn toggle_pause(
+    client: &ApiClient,
+    session_id: SessionId,
+    state: &mut TuiState,
+    frame: &mut PlayerFrameResponse,
+) -> Result<(), DynError> {
+    if frame.runner.paused {
+        client.run_session(session_id).await?;
+        state.push_output("Sandbox session resumed".to_owned());
+    } else {
+        client.pause_session(session_id).await?;
+        state.push_output("Sandbox session paused".to_owned());
+    }
+    let updated = client
+        .frame(session_id, frame.view.player_id, frame.next_event_index)
+        .await?;
+    state.apply_frame(&updated);
+    *frame = updated;
+    Ok(())
+}
+
+async fn set_speed(
+    client: &ApiClient,
+    session_id: SessionId,
+    state: &mut TuiState,
+    frame: &mut PlayerFrameResponse,
+    speed: u64,
+) -> Result<(), DynError> {
+    client.set_speed(session_id, speed).await?;
+    state.push_output(format!("Tick speed set to {speed} ms"));
+    let updated = client
+        .frame(session_id, frame.view.player_id, frame.next_event_index)
+        .await?;
+    state.apply_frame(&updated);
+    *frame = updated;
+    Ok(())
+}
+
+async fn toggle_relay(
+    client: &ApiClient,
+    session_id: SessionId,
+    player_id: PlayerId,
+    state: &mut TuiState,
+    frame: &mut PlayerFrameResponse,
+) -> Result<(), DynError> {
+    let Some(location) = frame.view.locations.get(state.selected_location_index) else {
+        return Ok(());
+    };
+    let Some(relay_status) = location.relay_status.clone() else {
+        return Ok(());
+    };
+    let new_status = match relay_status {
+        RelayStatus::Connected => RelayStatus::Disconnected,
+        RelayStatus::Disconnected => RelayStatus::Connected,
+    };
+    execute_player_scoped_command(
+        client,
+        session_id,
+        player_id,
+        state,
+        frame,
+        PlayerScopedCommand::Relay(crate::cli::ScopedRelayArgs {
+            location: location.location_id,
+            status: new_status,
+        }),
+    )
+    .await
+}
+
+async fn refresh_after_failure(
+    client: &ApiClient,
+    session_id: SessionId,
+    player_id: PlayerId,
+    state: &mut TuiState,
+    frame: &mut PlayerFrameResponse,
+) {
+    if let Ok(updated) = client
+        .frame(session_id, player_id, frame.next_event_index)
+        .await
+    {
+        state.apply_frame(&updated);
+        *frame = updated;
+    }
 }
 
 async fn execute_player_scoped_command(
@@ -739,7 +825,9 @@ async fn execute_player_scoped_command(
                 state.push_output(line);
             }
         }
-        PlayerScopedCommand::Events(_) => {}
+        PlayerScopedCommand::Events(PlayerEventsArgs { from_tick }) => {
+            refresh_all_events(client, session_id, player_id, state, frame, *from_tick).await?;
+        }
         _ => {
             let command_kind = command
                 .to_command_kind()
@@ -772,7 +860,7 @@ fn draw(
         .constraints([
             Constraint::Length(7),
             Constraint::Min(10),
-            Constraint::Length(6),
+            Constraint::Length(8),
         ])
         .split(frame.area());
 
@@ -791,17 +879,22 @@ fn draw(
         ])
         .split(layout[1]);
 
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(middle[2]);
+
     draw_location_list(frame, live_frame, state, middle[0]);
     draw_details(frame, live_frame, state, middle[1]);
-    draw_events(frame, state, middle[2]);
+    draw_actions(frame, live_frame, state, right[0]);
+    draw_events(frame, state, right[1]);
 
     let bottom_text = [
-        "Hotkeys: Up/Down move  Enter target  o origin  s/p/c/a/x actions  b/r/u/g/t command modals  l relay  R ready  Space/1/2/3 sandbox  : command  ? help  q quit".to_owned(),
+        current_message(live_frame, state),
+        "Tab switch pane  Up/Down move  Enter select  Left/Right adjust  Esc back  ? help  : advanced  q quit".to_owned(),
         format!(
-            "Focus: {:?}  Origin: {:?}  Target: {:?}  Alerts: {}  Runner: {:?} paused={} speed={}ms",
+            "Pane={:?}  Alerts={}  Runner={:?} paused={} speed={}ms",
             state.focus,
-            state.origin_location_id,
-            state.target_location_id,
             state.unread_alerts.len(),
             live_frame.runner.phase,
             live_frame.runner.paused,
@@ -810,7 +903,11 @@ fn draw(
         state.output_lines.join("\n"),
     ];
     let bottom = Paragraph::new(bottom_text.join("\n"))
-        .block(Block::default().borders(Borders::ALL).title("Controls"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Controls / Output"),
+        )
         .wrap(Wrap { trim: true });
     frame.render_widget(bottom, layout[2]);
 
@@ -830,33 +927,21 @@ fn draw_location_list(
         .locations
         .iter()
         .map(|location| {
-            let mut prefix = String::new();
-            if state.origin_location_id == Some(location.location_id) {
-                prefix.push('O');
-            }
-            if state.target_location_id == Some(location.location_id) {
-                prefix.push('T');
-            }
-            if prefix.is_empty() {
-                prefix.push(' ');
-            }
             ListItem::new(format!(
-                "[{}] #{:>2} {:<18} {:?}",
-                prefix, location.location_id, location.name, location.visibility
+                "#{:>2} {:<18} {:?}",
+                location.location_id, location.name, location.visibility
             ))
         })
         .collect::<Vec<_>>();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(if state.focus == FocusPane::Map {
-                    "Locations *"
-                } else {
-                    "Locations"
-                }),
-        )
+        .block(Block::default().borders(Borders::ALL).title(
+            if state.focus == PaneFocus::Locations {
+                "Locations *"
+            } else {
+                "Locations"
+            },
+        ))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     let mut list_state = ListState::default();
     list_state.select(if live_frame.view.locations.is_empty() {
@@ -879,22 +964,58 @@ fn draw_details(
         .get(state.selected_location_index)
         .map(render_location)
         .unwrap_or_else(|| "No location selected".to_owned());
-    let hints = action_hints(live_frame, state).join("\n");
+    let hints = action_hints(live_frame, state.selected_location_index).join("\n");
     let content = if hints.is_empty() {
         details
     } else {
         format!("{details}\n\nAction hints:\n{hints}")
     };
     let widget = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title(
-            if state.focus == FocusPane::Overview {
-                "Details *"
-            } else {
-                "Details"
-            },
-        ))
+        .block(Block::default().borders(Borders::ALL).title("Details"))
         .wrap(Wrap { trim: true });
     frame.render_widget(widget, area);
+}
+
+fn draw_actions(
+    frame: &mut ratatui::Frame<'_>,
+    live_frame: &PlayerFrameResponse,
+    state: &TuiState,
+    area: Rect,
+) {
+    let actions = derive_actions(live_frame, state.selected_location_index);
+    let items = actions
+        .iter()
+        .map(|action| {
+            let status = if action.availability.is_enabled() {
+                ' '
+            } else {
+                'x'
+            };
+            let group = match action.group {
+                ActionGroup::Location => "World",
+                ActionGroup::Session => "Session",
+            };
+            ListItem::new(format!("[{status}] {group}: {}", action.label))
+        })
+        .collect::<Vec<_>>();
+
+    let list =
+        List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(
+                if state.focus == PaneFocus::Actions {
+                    "Actions *"
+                } else {
+                    "Actions"
+                },
+            ))
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut list_state = ListState::default();
+    list_state.select(
+        state
+            .selected_action_id
+            .and_then(|action_id| action_index(&actions, action_id)),
+    );
+    frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 fn draw_events(frame: &mut ratatui::Frame<'_>, state: &TuiState, area: Rect) {
@@ -917,34 +1038,32 @@ fn draw_events(frame: &mut ratatui::Frame<'_>, state: &TuiState, area: Rect) {
                 .map(|alert| format!("  {}", alert.title)),
         );
     }
-    let widget =
-        Paragraph::new(lines.join("\n"))
-            .block(Block::default().borders(Borders::ALL).title(
-                if state.focus == FocusPane::Events {
-                    "Events *"
-                } else {
-                    "Events"
-                },
-            ))
-            .wrap(Wrap { trim: true });
+    let widget = Paragraph::new(lines.join("\n"))
+        .block(Block::default().borders(Borders::ALL).title("Events"))
+        .wrap(Wrap { trim: true });
     frame.render_widget(widget, area);
 }
 
 fn draw_modal(frame: &mut ratatui::Frame<'_>, modal: &ModalState) {
-    let area = centered_rect(70, 30, frame.area());
+    let area = centered_rect(80, 45, frame.area());
     frame.render_widget(Clear, area);
 
     let (title, body) = match modal {
         ModalState::Help => (
-            "Help",
-            "q quit\nR ready toggle\nSpace pause/resume sandbox\n1/2/3 speed presets\nUse : for typed commands like `status`, `map`, `events --from-tick 10`, `survey --origin 1 --destination 17`, `budget --upkeep 0 --research 16 --training 0 --agents 0`, or `research --branch models --target-level 1`.\nHotkeys: s survey, p pacify, c claim, a assault, x strike, g research.",
+            "Help".to_owned(),
+            [
+                "Tab switches between the Locations and Actions panes.".to_owned(),
+                "Up/Down moves within the focused pane.".to_owned(),
+                "Enter opens the selected action or confirms the current form.".to_owned(),
+                "Left/Right adjusts numeric form fields.".to_owned(),
+                "Esc closes the current form or clears unread alerts.".to_owned(),
+                ": opens the advanced command line.".to_owned(),
+                "Legacy shortcuts still work: s/p/c/a/x b/r/u/g/t l R Space 1/2/3 q".to_owned(),
+            ]
+            .join("\n"),
         ),
-        ModalState::CommandLine { input } => ("Command", input.as_str()),
-        ModalState::Build { input } => ("Build", input.as_str()),
-        ModalState::Repair { input } => ("Repair", input.as_str()),
-        ModalState::Budget { input } => ("Budget", input.as_str()),
-        ModalState::Research { input } => ("Research", input.as_str()),
-        ModalState::Train { input } => ("Train", input.as_str()),
+        ModalState::LegacyCommand { input } => ("Advanced Command".to_owned(), input.clone()),
+        ModalState::ActionForm(form) => (form_title(form), form_lines(form).join("\n")),
     };
     let widget = Paragraph::new(body)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -971,68 +1090,63 @@ fn centered_rect(horizontal_percent: u16, vertical_percent: u16, area: Rect) -> 
         .split(vertical[1])[1]
 }
 
-fn action_hints(frame: &PlayerFrameResponse, state: &TuiState) -> Vec<String> {
-    let mut hints = Vec::new();
-    if let Some(target_id) = state.target_location_id
-        && let Some(target) = frame
-            .view
-            .locations
-            .iter()
-            .find(|location| location.location_id == target_id)
+fn current_message(frame: &PlayerFrameResponse, state: &TuiState) -> String {
+    if let Some(ModalState::ActionForm(form)) = &state.modal
+        && let Some(message) = selected_form_message(form)
     {
-        if target.visibility == LocationVisibility::Observed && target.controller.is_none() {
-            hints.push(
-                "Observed neutral worlds can often be claimed after survey/pacify.".to_owned(),
-            );
-        }
-        if target.controller.is_some() && target.controller != Some(frame.view.player_id) {
-            hints.push(
-                "Surveyed enemy worlds can be hit with `x` for a strategic strike.".to_owned(),
-            );
-        }
-        if target.hostile_remnant_present == Some(true) {
-            hints.push("Target has a hostile remnant. Pacify before claiming.".to_owned());
-        }
-        if target
-            .contesting_players
-            .as_ref()
-            .is_some_and(|players| !players.is_empty())
-        {
-            hints.push("Target is contested. Expect combat-related follow-up events.".to_owned());
-        }
-        if target.territory == starforge_core::TerritoryState::Contested
-            && target.controller != Some(frame.view.player_id)
-            && (target.economy.is_none() || target.infrastructure_projects.is_none())
-        {
-            hints.push(
-                "Enemy contested worlds now hide economy and project intel until takeover resolves."
-                    .to_owned(),
-            );
-        }
-        if target
-            .pacification_ticks_remaining
-            .is_some_and(|ticks_remaining| ticks_remaining > 0)
-        {
-            hints.push(
-                "Pacification is active here; world output is reduced until the timer clears."
-                    .to_owned(),
-            );
-        }
-        if target.infrastructure.as_ref().is_some_and(|infra| {
-            infra
-                .iter()
-                .any(|item| item.condition != starforge_core::InfrastructureCondition::Operational)
-        }) {
-            hints.push("Selected world has damaged infrastructure and may need repair.".to_owned());
-        }
+        return message;
     }
-    if state.origin_location_id.is_none() {
-        hints.push("Set an origin with `o` before using expedition hotkeys.".to_owned());
+
+    let actions = derive_actions(frame, state.selected_location_index);
+    state
+        .selected_action_id
+        .and_then(|action_id| action_by_id(&actions, action_id))
+        .map(|action| action.summary())
+        .unwrap_or_else(|| "Select a world, then choose an action.".to_owned())
+}
+
+fn action_hints(frame: &PlayerFrameResponse, selected_location_index: usize) -> Vec<String> {
+    let mut hints = Vec::new();
+    let Some(location) = frame.view.locations.get(selected_location_index) else {
+        return hints;
+    };
+
+    if location.visibility == LocationVisibility::Observed && location.controller.is_none() {
+        hints.push("Observed neutral worlds can usually be surveyed, then claimed.".to_owned());
+    }
+    if location.controller.is_some() && location.controller != Some(frame.view.player_id) {
+        hints.push(
+            "Enemy worlds usually need survey before assault or strategic strike.".to_owned(),
+        );
+    }
+    if location.hostile_remnant_present == Some(true) {
+        hints.push("Clear hostile remnants before claiming this world.".to_owned());
+    }
+    if location.territory == starforge_core::TerritoryState::Contested
+        && location.controller != Some(frame.view.player_id)
+        && (location.economy.is_none() || location.infrastructure_projects.is_none())
+    {
+        hints.push(
+            "Enemy contested worlds hide economy and project details until takeover resolves."
+                .to_owned(),
+        );
+    }
+    if location
+        .pacification_ticks_remaining
+        .is_some_and(|ticks_remaining| ticks_remaining > 0)
+    {
+        hints.push("Pacification is active here; output is reduced until it clears.".to_owned());
+    }
+    if location.infrastructure.as_ref().is_some_and(|infra| {
+        infra
+            .iter()
+            .any(|item| item.condition != starforge_core::InfrastructureCondition::Operational)
+    }) {
+        hints.push("This world has damaged infrastructure and may need repair.".to_owned());
     }
     if frame.view.research.active_project.is_none() {
-        hints.push(
-            "Reserve research throughput with `u`, then press `g` to start a project.".to_owned(),
-        );
+        hints
+            .push("Use Budget and Research in the Actions pane to start a new project.".to_owned());
     }
     match &frame.view.collapse {
         starforge_core::CommandCollapseState::Stable => {}
@@ -1047,10 +1161,10 @@ fn action_hints(frame: &PlayerFrameResponse, state: &TuiState) -> Vec<String> {
         }
     }
     if frame.runner.phase == SessionPhase::Lobby {
-        hints.push("Match is in lobby. Press `R` to toggle ready.".to_owned());
+        hints.push("Match is in the lobby. Select Mark Ready from the Actions pane.".to_owned());
     }
     if frame.runner.mode == SessionMode::Sandbox {
-        hints.push("Sandbox controls: Space pauses, 1/2/3 change speed.".to_owned());
+        hints.push("Sandbox runner controls are available in the Session actions list.".to_owned());
     }
     hints
 }
@@ -1083,6 +1197,12 @@ fn live_status_lines(
         }
         None => "Training idle".to_owned(),
     };
+    let selected_location = frame
+        .view
+        .locations
+        .get(state.selected_location_index)
+        .map(|location| format!("#{} {}", location.location_id, location.name))
+        .unwrap_or_else(|| "none".to_owned());
 
     vec![
         format!(
@@ -1095,14 +1215,14 @@ fn live_status_lines(
             frame.runner.tick_interval_ms
         ),
         format!(
-            "P{} tier {} collapse={} owned={} alerts={} origin={:?} target={:?}",
+            "P{} tier {} collapse={} owned={} alerts={} selected={} pane={:?}",
             player_id.0,
             frame.view.model_tier,
             render_collapse(&frame.view.collapse),
             owned_worlds,
             state.unread_alerts.len(),
-            state.origin_location_id,
-            state.target_location_id
+            selected_location,
+            state.focus
         ),
         format!(
             "Throughput avail={} upkeep={} research={} training={} agents={}  Stockpiles {}",
@@ -1125,8 +1245,8 @@ fn live_status_lines(
                 .active_project
                 .as_ref()
                 .map(|project| format!(
-                    "{} {} {}/{}",
-                    render_research_branch(project.branch),
+                    "{:?} {} {}/{}",
+                    project.branch,
                     project.target_level,
                     project.progress_ticks,
                     project.required_ticks
@@ -1287,69 +1407,36 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
-
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use starforge_api::PlayerAlertKind;
 
-    use super::{FocusPane, ModalState, TuiState, default_research_command, report_ui_error};
+    use crate::tui_actions::{ActionFormState, ActionId, PaneFocus, action_form_for_selected};
+
+    use super::{ModalState, TuiState, handle_modal_key};
 
     #[test]
-    fn reducer_sets_origin_from_selection() {
-        let mut state = TuiState {
-            selected_location_index: 0,
-            origin_location_id: None,
-            target_location_id: None,
-            focus: FocusPane::Overview,
-            modal: None,
-            unread_alerts: Vec::new(),
-            recent_events: Vec::new(),
-            output_lines: Vec::new(),
-        };
-        let frame = crate::live_test_frame();
-        state.set_origin_from_selection(&frame, starforge_core::PlayerId::new(1));
-        assert_eq!(state.origin_location_id, Some(1));
+    fn from_frame_selects_first_visible_action() {
+        let mut frame = crate::live_test_frame();
+        frame.alerts.clear();
+        let state = TuiState::from_frame(&frame);
+        assert_eq!(state.selected_action_id, Some(ActionId::Build));
     }
 
     #[test]
-    fn reducer_sets_target_from_selection() {
-        let mut state = TuiState {
-            selected_location_index: 1,
-            origin_location_id: None,
-            target_location_id: None,
-            focus: FocusPane::Overview,
-            modal: None,
-            unread_alerts: Vec::new(),
-            recent_events: Vec::new(),
-            output_lines: Vec::new(),
-        };
+    fn apply_frame_retargets_alerted_location() {
+        let mut state = TuiState::from_frame(&crate::live_test_frame());
         let frame = crate::live_test_frame();
-        state.set_target_from_selection(&frame);
-        assert_eq!(state.target_location_id, Some(2));
-    }
-
-    #[test]
-    fn reducer_opens_modal() {
-        let mut state = TuiState {
-            selected_location_index: 0,
-            origin_location_id: None,
-            target_location_id: None,
-            focus: FocusPane::Overview,
-            modal: None,
-            unread_alerts: Vec::new(),
-            recent_events: Vec::new(),
-            output_lines: Vec::new(),
-        };
-        state.open_modal(ModalState::Help);
-        assert_eq!(state.modal, Some(ModalState::Help));
+        state.apply_frame(&frame);
+        assert_eq!(state.selected_location_index, 1);
+        assert_eq!(state.selected_action_id, Some(ActionId::Survey));
     }
 
     #[test]
     fn reducer_acknowledges_alerts() {
         let mut state = TuiState {
             selected_location_index: 0,
-            origin_location_id: None,
-            target_location_id: None,
-            focus: FocusPane::Overview,
+            selected_action_id: Some(ActionId::Build),
+            focus: PaneFocus::Locations,
             modal: None,
             unread_alerts: vec![starforge_api::PlayerAlert {
                 kind: PlayerAlertKind::Survey,
@@ -1365,51 +1452,37 @@ mod tests {
     }
 
     #[test]
-    fn default_research_modal_prefers_lowest_level_branch() {
+    fn invalid_budget_submit_keeps_action_form_open() {
         let frame = crate::live_test_frame();
-        assert_eq!(
-            default_research_command(&frame),
-            "research --branch industry --target-level 1"
-        );
-    }
+        let mut state = TuiState::from_frame(&frame);
+        let mut form = action_form_for_selected(ActionId::Budget, &frame, 0).expect("budget form");
+        if let ActionFormState::Budget {
+            upkeep,
+            total_available,
+            ..
+        } = &mut form
+        {
+            *upkeep = *total_available + 1;
+        } else {
+            panic!("expected budget form");
+        }
 
-    #[test]
-    fn budget_modal_tracks_research_field() {
-        let frame = crate::live_test_frame();
-        let input = format!(
-            "budget --upkeep {} --research {} --training {} --agents {}",
-            frame.view.throughput.reserved_for_model_upkeep,
-            frame.view.throughput.reserved_for_research,
-            frame.view.throughput.reserved_for_training,
-            frame.view.throughput.reserved_for_agents
-        );
-        assert_eq!(
-            input,
-            "budget --upkeep 0 --research 0 --training 0 --agents 0"
-        );
-    }
-
-    #[test]
-    fn ui_errors_are_written_to_output_instead_of_bubbling() {
-        let mut state = TuiState {
-            selected_location_index: 0,
-            origin_location_id: None,
-            target_location_id: None,
-            focus: FocusPane::Overview,
-            modal: None,
-            unread_alerts: Vec::new(),
-            recent_events: Vec::new(),
-            output_lines: Vec::new(),
-        };
-
-        report_ui_error(
+        let result = handle_modal_key(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &mut state,
-            &io::Error::other("api request failed: 409 Conflict"),
-        );
+            &frame,
+            ModalState::ActionForm(form),
+        )
+        .expect("modal should handle invalid budget");
 
-        assert_eq!(
-            state.output_lines,
-            vec!["Error: api request failed: 409 Conflict".to_owned()]
+        assert!(result.is_none());
+        assert!(matches!(state.modal, Some(ModalState::ActionForm(_))));
+        assert!(
+            state
+                .output_lines
+                .last()
+                .expect("error output")
+                .contains("Action failed")
         );
     }
 }

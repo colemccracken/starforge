@@ -1,3 +1,4 @@
+pub mod balance;
 pub mod command;
 pub mod config;
 pub mod event;
@@ -7,6 +8,11 @@ pub mod session;
 pub mod snapshot;
 pub mod state;
 
+pub use balance::{
+    ProjectPreview, ResearchPreview, TrainingPreview, buildable_infrastructure_kinds,
+    construction_preview, is_unique_infrastructure, repair_preview, research_preview,
+    strategic_strike_cost, training_preview,
+};
 pub use command::{CommandDiscriminant, CommandEnvelope, CommandKind, ValidationError};
 pub use config::{GameConfig, LocationConnection, ScenarioConfig, StartingLocation};
 pub use event::{EventDiscriminant, EventKind, EventRecord, IndexedEventRecord};

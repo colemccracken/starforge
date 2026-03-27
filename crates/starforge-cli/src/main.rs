@@ -32,6 +32,7 @@ use crate::{
 mod cli;
 mod live;
 mod render;
+mod tui_actions;
 
 type DynError = Box<dyn Error>;
 
