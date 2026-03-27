@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Starforge Taxonomy</title>
+    <style>
+/*__TAXONOMY_CSS__*/
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Internal Reference Explorer</p>
+          <h1>Starforge Taxonomy</h1>
+          <p class="subtitle" id="datasetMeta">Loading configured ruleset and scenario...</p>
+        </div>
+        <div class="filters">
+          <label>
+            <span>Search</span>
+            <input id="queryInput" type="search" placeholder="Search concepts, commands, enums..." />
+          </label>
+          <label>
+            <span>Status</span>
+            <select id="statusFilter">
+              <option value="all">All statuses</option>
+              <option value="implemented">Implemented</option>
+              <option value="partial">Partial</option>
+              <option value="planned">Planned</option>
+              <option value="draft">Draft</option>
+            </select>
+          </label>
+          <label>
+            <span>Domain</span>
+            <select id="domainFilter">
+              <option value="all">All domains</option>
+            </select>
+          </label>
+        </div>
+      </header>
+
+      <section class="layout">
+        <nav class="list-panel">
+          <div class="panel-header">
+            <h2>Entries</h2>
+            <p id="resultsMeta">Loading entries...</p>
+          </div>
+          <div id="entryList" class="entry-list"></div>
+        </nav>
+
+        <main class="detail-panel" id="detailPanel">
+          <div class="empty-state">
+            <p>Select an entry to inspect its current status, references, implementation links, and bound ruleset values.</p>
+          </div>
+        </main>
+      </section>
+    </div>
+
+    <script>
+//__TAXONOMY_JS__
+    </script>
+  </body>
+</html>

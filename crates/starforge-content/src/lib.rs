@@ -1,5 +1,6 @@
 use std::{fmt, fs, path::Path};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use starforge_core::{
     BuildCapacity, EnergyPotential, GameConfig, HostileRemnantKind, HostileRemnantSeed,
@@ -45,7 +46,7 @@ pub struct CompiledScenario {
     pub scenario_config: ScenarioConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RulesetDocument {
     pub name: String,
     pub version: u32,
@@ -53,12 +54,12 @@ pub struct RulesetDocument {
     pub world: WorldGenerationDocument,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PlayerRulesetDocument {
     pub max_players: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorldGenerationDocument {
     pub body_count_min: u8,
     pub body_count_max: u8,
@@ -71,7 +72,7 @@ pub struct WorldGenerationDocument {
     pub hostile_remnant_worlds_max: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ScenarioDocument {
     pub name: String,
     pub ruleset: String,
@@ -79,7 +80,7 @@ pub struct ScenarioDocument {
     pub players: Vec<PlayerSlotDocument>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PlayerSlotDocument {
     pub id: PlayerId,
     pub homeworld_name: Option<String>,

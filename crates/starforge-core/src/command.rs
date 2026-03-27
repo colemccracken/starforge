@@ -1,6 +1,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoStaticStr};
 
 use crate::{InfrastructureKind, PlayerId, RelayStatus, SessionId, TickId};
 
@@ -61,6 +62,66 @@ pub enum CommandKind {
     StartTrainingRun {
         target_tier: u8,
     },
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum CommandDiscriminant {
+    NoOp,
+    AdvanceTick,
+    SetThroughputBudget,
+    AssignAgent,
+    RegisterLocation,
+    SetRelayStatus,
+    QueueInfrastructureRepair,
+    QueueInfrastructureConstruction,
+    DispatchSurveyTransit,
+    DispatchPacificationTransit,
+    DispatchClaimTransit,
+    SurveyLocation,
+    StartTrainingRun,
+}
+
+impl CommandDiscriminant {
+    pub fn implementation_key(self) -> String {
+        let discriminant: &'static str = self.into();
+        format!("command_kind.{discriminant}")
+    }
+}
+
+impl From<&CommandKind> for CommandDiscriminant {
+    fn from(value: &CommandKind) -> Self {
+        match value {
+            CommandKind::NoOp => Self::NoOp,
+            CommandKind::AdvanceTick => Self::AdvanceTick,
+            CommandKind::SetThroughputBudget { .. } => Self::SetThroughputBudget,
+            CommandKind::AssignAgent { .. } => Self::AssignAgent,
+            CommandKind::RegisterLocation { .. } => Self::RegisterLocation,
+            CommandKind::SetRelayStatus { .. } => Self::SetRelayStatus,
+            CommandKind::QueueInfrastructureRepair { .. } => Self::QueueInfrastructureRepair,
+            CommandKind::QueueInfrastructureConstruction { .. } => {
+                Self::QueueInfrastructureConstruction
+            }
+            CommandKind::DispatchSurveyTransit { .. } => Self::DispatchSurveyTransit,
+            CommandKind::DispatchPacificationTransit { .. } => Self::DispatchPacificationTransit,
+            CommandKind::DispatchClaimTransit { .. } => Self::DispatchClaimTransit,
+            CommandKind::SurveyLocation { .. } => Self::SurveyLocation,
+            CommandKind::StartTrainingRun { .. } => Self::StartTrainingRun,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

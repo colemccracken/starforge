@@ -1,0 +1,229 @@
+entries:
+  - id: world
+    title: World And Map Model
+    kind: section
+    summary: Strategic map structure, travel, and location-level world concepts.
+  - id: world.map_and_travel
+    title: Map And Travel
+    kind: concept
+    parent_id: world
+    summary: Procedural solar systems, body classes, and committed route-based travel between locations.
+    status: planned
+    reference_sections:
+      - Solar System Structure
+      - Travel
+
+  - id: economy
+    title: Economy
+    kind: section
+    summary: Resource extraction, compute, infrastructure, and network rules.
+  - id: economy.throughput
+    title: Throughput
+    kind: concept
+    parent_id: economy
+    summary: Usable AI compute is derived from energy supply, datacenter capacity, and current infrastructure condition.
+    status: implemented
+    reference_sections:
+      - Energy and Datacenter Relationship
+      - Throughput Budget Rule
+    implementation_keys:
+      - core.state.compute_location_economy
+      - core.session.apply_set_throughput_budget
+    behavior_ids:
+      - behavior.economy.throughput_computation
+    related_ids:
+      - economy.relay_network
+      - ai.training_runs
+  - id: economy.relay_network
+    title: Relay Network
+    kind: concept
+    parent_id: economy
+    summary: Empire-wide throughput depends on owned worlds remaining connected through operational relay infrastructure.
+    status: implemented
+    reference_sections:
+      - Relay Network Rule
+    implementation_keys:
+      - core.state.compute_location_economy
+      - core.session.apply_set_relay_status
+    behavior_ids:
+      - behavior.economy.relay_disconnect_zeroes_empire_throughput
+    related_ids:
+      - economy.throughput
+  - id: economy.infrastructure_maintenance
+    title: Infrastructure Maintenance
+    kind: concept
+    parent_id: economy
+    summary: Damaged infrastructure can be repaired over time by spending stockpiled materials and ticking queued projects.
+    status: implemented
+    reference_sections:
+      - Maintenance and Wear
+    implementation_keys:
+      - core.session.apply_queue_infrastructure_repair
+    behavior_ids:
+      - behavior.infrastructure.repair_project_completion
+  - id: economy.infrastructure_construction
+    title: Infrastructure Construction
+    kind: concept
+    parent_id: economy
+    summary: Core economic infrastructure is built through queued projects that consume connected or local stockpiles.
+    status: implemented
+    reference_sections:
+      - Construction Rule
+    implementation_keys:
+      - core.session.apply_queue_infrastructure_construction
+    behavior_ids:
+      - behavior.infrastructure.construction_project_completion
+  - id: economy.economic_failure_states
+    title: Economic Failure States
+    kind: concept
+    parent_id: economy
+    summary: Power deficits, relay cuts, and damaged infrastructure are intended to create visible economic crises and recovery loops.
+    status: planned
+    reference_sections:
+      - Economic Failure States
+      - Economic Tradeoffs
+
+  - id: intel
+    title: Intel And Visibility
+    kind: section
+    summary: Survey, visibility, and information-state rules for player-scoped read models.
+  - id: intel.survey_and_visibility
+    title: Survey And Visibility
+    kind: concept
+    parent_id: intel
+    summary: Survey expeditions and player-scoped visibility determine which location facts remain owned, observed, surveyed, or obscured.
+    status: implemented
+    reference_sections:
+      - Survey Rules
+      - Information States
+      - Visibility by Control State
+    implementation_keys:
+      - core.session.apply_dispatch_transit
+      - core.session.apply_survey_location
+    behavior_ids:
+      - behavior.intel.survey_transit_marks_location_surveyed
+    related_ids:
+      - enums.location_visibility
+  - id: intel.sensor_sources
+    title: Sensor Sources
+    kind: concept
+    parent_id: intel
+    summary: Dedicated sensor infrastructure and route coverage are described in the reference but are not yet modeled in the engine.
+    status: planned
+    reference_sections:
+      - Sensor Sources
+
+  - id: ai
+    title: AI Systems
+    kind: section
+    summary: Sovereign model progression, automation, and long-duration training systems.
+  - id: ai.training_runs
+    title: Training Runs
+    kind: concept
+    parent_id: ai
+    summary: Reserved throughput can be committed to deterministic tier progression with world-count and site requirements.
+    status: implemented
+    reference_sections:
+      - Model Tiers
+      - Training Runs
+    implementation_keys:
+      - core.session.apply_start_training_run
+    behavior_ids:
+      - behavior.training.tier_two_progression
+    related_ids:
+      - economy.throughput
+  - id: ai.sovereign_model
+    title: Sovereign Model
+    kind: concept
+    parent_id: ai
+    summary: The distributed model identity and long-form progression fantasy are defined in the reference and only partially surfaced in current runtime state.
+    status: planned
+    reference_sections:
+      - Sovereign Model
+      - Model Tiers
+  - id: ai.agent_roles
+    title: Agent Roles
+    kind: concept
+    parent_id: ai
+    summary: Agent role taxonomy and authority boundaries are described in design but are not yet represented by typed engine enums.
+    status: planned
+    reference_sections:
+      - Agents
+      - Agent Authority Boundaries
+      - Agent Role Taxonomy
+
+  - id: technology
+    title: Technology And Progression
+    kind: section
+    summary: Research and longer-horizon progression systems beyond model training.
+  - id: technology.research
+    title: Research
+    kind: concept
+    parent_id: technology
+    summary: Technology investment, branch selection, and research capacity remain design concepts rather than implemented engine logic.
+    status: planned
+    reference_sections:
+      - Research Inputs
+      - Core Technology Branches
+      - Progression Intent
+
+  - id: conflict
+    title: Conflict And Expansion
+    kind: section
+    summary: Military and territorial resolution systems that change control of locations.
+  - id: conflict.pacification_and_claim
+    title: Pacification And Claim
+    kind: concept
+    parent_id: conflict
+    summary: Neutral worlds can be surveyed, pacified, and claimed through deterministic transit resolution and colony seeding.
+    status: implemented
+    reference_sections:
+      - Survey Rules
+      - Conquest Rules
+      - Takeover Outcome
+    implementation_keys:
+      - core.session.resolve_pacification_arrival
+      - core.session.resolve_claim_arrival
+    behavior_ids:
+      - behavior.expansion.pacification_then_claim
+  - id: conflict.unit_families
+    title: Unit Families
+    kind: concept
+    parent_id: conflict
+    summary: Fleet, transport, defense, and ground-force taxonomy is still defined only in the reference.
+    status: planned
+    reference_sections:
+      - Unit Families
+      - Military Production
+  - id: conflict.conquest_rules
+    title: Conquest Rules
+    kind: concept
+    parent_id: conflict
+    summary: Full conquest, takeover, and destruction outcomes remain future work beyond neutral-world expansion.
+    status: planned
+    reference_sections:
+      - Conquest Rules
+      - Takeover Outcome
+      - Destruction Outcome
+
+  - id: victory
+    title: Victory And Defeat
+    kind: section
+    summary: Match-ending paths and collapse states.
+  - id: victory.conquest_victory
+    title: Conquest Victory
+    kind: concept
+    parent_id: victory
+    summary: Elimination of all opposing sovereignty is part of the reference design but is not yet implemented in engine victory logic.
+    status: planned
+    reference_sections:
+      - Conquest Victory
+      - Defeat State
+  - id: victory.command_collapse
+    title: Command Collapse
+    kind: concept
+    parent_id: victory
+    summary: Command collapse exists as a runtime state enum but has no gameplay rules attached yet.
+    status: draft
+    reference_sections:
+      - Command Collapse Rule

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoStaticStr};
 
 use crate::{
     CommandKind, InfrastructureCondition, InfrastructureKind, MatchSeed, PlayerId, RelayStatus,
@@ -116,4 +117,88 @@ pub enum EventKind {
         winner: PlayerId,
         reason: String,
     },
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum EventDiscriminant {
+    SessionCreated,
+    TickAdvanced,
+    CommandAccepted,
+    CommandApplied,
+    CommandRejected,
+    ThroughputBudgetSet,
+    EconomyUpdated,
+    AgentAssigned,
+    LocationRegistered,
+    RelayStatusChanged,
+    InfrastructureConditionChanged,
+    InfrastructureRepairQueued,
+    InfrastructureRepairCompleted,
+    InfrastructureConstructionQueued,
+    InfrastructureConstructionCompleted,
+    TransitDispatched,
+    TransitArrived,
+    LocationSurveyed,
+    HostileRemnantCleared,
+    LocationClaimed,
+    TrainingRunStarted,
+    TrainingRunCompleted,
+    VictoryDeclared,
+}
+
+impl EventDiscriminant {
+    pub fn implementation_key(self) -> String {
+        let discriminant: &'static str = self.into();
+        format!("event_kind.{discriminant}")
+    }
+}
+
+impl From<&EventKind> for EventDiscriminant {
+    fn from(value: &EventKind) -> Self {
+        match value {
+            EventKind::SessionCreated { .. } => Self::SessionCreated,
+            EventKind::TickAdvanced { .. } => Self::TickAdvanced,
+            EventKind::CommandAccepted { .. } => Self::CommandAccepted,
+            EventKind::CommandApplied { .. } => Self::CommandApplied,
+            EventKind::CommandRejected { .. } => Self::CommandRejected,
+            EventKind::ThroughputBudgetSet { .. } => Self::ThroughputBudgetSet,
+            EventKind::EconomyUpdated { .. } => Self::EconomyUpdated,
+            EventKind::AgentAssigned { .. } => Self::AgentAssigned,
+            EventKind::LocationRegistered { .. } => Self::LocationRegistered,
+            EventKind::RelayStatusChanged { .. } => Self::RelayStatusChanged,
+            EventKind::InfrastructureConditionChanged { .. } => {
+                Self::InfrastructureConditionChanged
+            }
+            EventKind::InfrastructureRepairQueued { .. } => Self::InfrastructureRepairQueued,
+            EventKind::InfrastructureRepairCompleted { .. } => Self::InfrastructureRepairCompleted,
+            EventKind::InfrastructureConstructionQueued { .. } => {
+                Self::InfrastructureConstructionQueued
+            }
+            EventKind::InfrastructureConstructionCompleted { .. } => {
+                Self::InfrastructureConstructionCompleted
+            }
+            EventKind::TransitDispatched { .. } => Self::TransitDispatched,
+            EventKind::TransitArrived { .. } => Self::TransitArrived,
+            EventKind::LocationSurveyed { .. } => Self::LocationSurveyed,
+            EventKind::HostileRemnantCleared { .. } => Self::HostileRemnantCleared,
+            EventKind::LocationClaimed { .. } => Self::LocationClaimed,
+            EventKind::TrainingRunStarted { .. } => Self::TrainingRunStarted,
+            EventKind::TrainingRunCompleted { .. } => Self::TrainingRunCompleted,
+            EventKind::VictoryDeclared { .. } => Self::VictoryDeclared,
+        }
+    }
 }

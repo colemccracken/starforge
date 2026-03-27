@@ -1,0 +1,190 @@
+entries:
+  - id: events
+    title: Events
+    kind: section
+    summary: Domain events emitted by the simulation and filtered by player visibility.
+
+  - id: events.session_created
+    title: SessionCreated
+    kind: event
+    parent_id: events
+    summary: Emitted when a session is created from a scenario and initial player list.
+    status: implemented
+    implementation_keys:
+      - event_kind.session_created
+  - id: events.tick_advanced
+    title: TickAdvanced
+    kind: event
+    parent_id: events
+    summary: Emitted each time the authoritative simulation advances one tick.
+    status: implemented
+    implementation_keys:
+      - event_kind.tick_advanced
+  - id: events.command_accepted
+    title: CommandAccepted
+    kind: event
+    parent_id: events
+    summary: Records an accepted command envelope and its apply tick.
+    status: implemented
+    implementation_keys:
+      - event_kind.command_accepted
+  - id: events.command_applied
+    title: CommandApplied
+    kind: event
+    parent_id: events
+    summary: Records a command variant that successfully mutated the simulation.
+    status: implemented
+    implementation_keys:
+      - event_kind.command_applied
+  - id: events.command_rejected
+    title: CommandRejected
+    kind: event
+    parent_id: events
+    summary: Records a rejected command and its structured validation error.
+    status: implemented
+    implementation_keys:
+      - event_kind.command_rejected
+  - id: events.throughput_budget_set
+    title: ThroughputBudgetSet
+    kind: event
+    parent_id: events
+    summary: Emits the active throughput reservation split after budget changes.
+    status: implemented
+    implementation_keys:
+      - event_kind.throughput_budget_set
+  - id: events.economy_updated
+    title: EconomyUpdated
+    kind: event
+    parent_id: events
+    summary: Emits recomputed connected energy, datacenter capacity, and usable throughput totals.
+    status: implemented
+    implementation_keys:
+      - event_kind.economy_updated
+  - id: events.agent_assigned
+    title: AgentAssigned
+    kind: event
+    parent_id: events
+    summary: Emits the agent role, scope, and reserved throughput for a new assignment.
+    status: implemented
+    implementation_keys:
+      - event_kind.agent_assigned
+  - id: events.location_registered
+    title: LocationRegistered
+    kind: event
+    parent_id: events
+    summary: Emits after a new location record is registered in-session.
+    status: implemented
+    implementation_keys:
+      - event_kind.location_registered
+  - id: events.relay_status_changed
+    title: RelayStatusChanged
+    kind: event
+    parent_id: events
+    summary: Emits when a controlled world's relay state is changed.
+    status: implemented
+    implementation_keys:
+      - event_kind.relay_status_changed
+  - id: events.infrastructure_condition_changed
+    title: InfrastructureConditionChanged
+    kind: event
+    parent_id: events
+    summary: Emits when accumulated wear changes an infrastructure condition tier.
+    status: implemented
+    implementation_keys:
+      - event_kind.infrastructure_condition_changed
+  - id: events.infrastructure_repair_queued
+    title: InfrastructureRepairQueued
+    kind: event
+    parent_id: events
+    summary: Emits queued repair duration and material costs.
+    status: implemented
+    implementation_keys:
+      - event_kind.infrastructure_repair_queued
+  - id: events.infrastructure_repair_completed
+    title: InfrastructureRepairCompleted
+    kind: event
+    parent_id: events
+    summary: Emits when a repair project completes and restores infrastructure condition.
+    status: implemented
+    implementation_keys:
+      - event_kind.infrastructure_repair_completed
+  - id: events.infrastructure_construction_queued
+    title: InfrastructureConstructionQueued
+    kind: event
+    parent_id: events
+    summary: Emits queued construction duration and cost for new infrastructure.
+    status: implemented
+    implementation_keys:
+      - event_kind.infrastructure_construction_queued
+  - id: events.infrastructure_construction_completed
+    title: InfrastructureConstructionCompleted
+    kind: event
+    parent_id: events
+    summary: Emits when a construction project adds a new infrastructure instance.
+    status: implemented
+    implementation_keys:
+      - event_kind.infrastructure_construction_completed
+  - id: events.transit_dispatched
+    title: TransitDispatched
+    kind: event
+    parent_id: events
+    summary: Emits a transit id, route, eta, and transit kind at dispatch time.
+    status: implemented
+    implementation_keys:
+      - event_kind.transit_dispatched
+  - id: events.transit_arrived
+    title: TransitArrived
+    kind: event
+    parent_id: events
+    summary: Emits when an in-flight transit reaches its destination location.
+    status: implemented
+    implementation_keys:
+      - event_kind.transit_arrived
+  - id: events.location_surveyed
+    title: LocationSurveyed
+    kind: event
+    parent_id: events
+    summary: Emits when a location becomes permanently surveyed for a player.
+    status: implemented
+    implementation_keys:
+      - event_kind.location_surveyed
+  - id: events.hostile_remnant_cleared
+    title: HostileRemnantCleared
+    kind: event
+    parent_id: events
+    summary: Emits when pacification removes a hostile remnant from a neutral world.
+    status: implemented
+    implementation_keys:
+      - event_kind.hostile_remnant_cleared
+  - id: events.location_claimed
+    title: LocationClaimed
+    kind: event
+    parent_id: events
+    summary: Emits when a neutral world becomes owned by a player after a successful claim.
+    status: implemented
+    implementation_keys:
+      - event_kind.location_claimed
+  - id: events.training_run_started
+    title: TrainingRunStarted
+    kind: event
+    parent_id: events
+    summary: Emits target tier, required throughput, and total duration for a new training run.
+    status: implemented
+    implementation_keys:
+      - event_kind.training_run_started
+  - id: events.training_run_completed
+    title: TrainingRunCompleted
+    kind: event
+    parent_id: events
+    summary: Emits the newly achieved model tier when training finishes.
+    status: implemented
+    implementation_keys:
+      - event_kind.training_run_completed
+  - id: events.victory_declared
+    title: VictoryDeclared
+    kind: event
+    parent_id: events
+    summary: Emits the winner and terminal reason once the session has a victor.
+    status: implemented
+    implementation_keys:
+      - event_kind.victory_declared

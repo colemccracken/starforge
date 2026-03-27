@@ -7,9 +7,9 @@ pub mod session;
 pub mod snapshot;
 pub mod state;
 
-pub use command::{CommandEnvelope, CommandKind, ValidationError};
+pub use command::{CommandDiscriminant, CommandEnvelope, CommandKind, ValidationError};
 pub use config::{GameConfig, LocationConnection, ScenarioConfig, StartingLocation};
-pub use event::{EventKind, EventRecord};
+pub use event::{EventDiscriminant, EventKind, EventRecord};
 pub use ids::{MatchSeed, PlayerId, SessionId, TickId};
 pub use replay::ReplayLog;
 pub use session::GameSession;

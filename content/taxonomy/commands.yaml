@@ -1,0 +1,128 @@
+entries:
+  - id: commands
+    title: Commands
+    kind: section
+    summary: Accepted command kinds for mutating the authoritative game session.
+
+  - id: commands.no_op
+    title: NoOp
+    kind: command
+    parent_id: commands
+    summary: Accepts a command envelope without applying any state mutation.
+    status: implemented
+    implementation_keys:
+      - command_kind.no_op
+  - id: commands.advance_tick
+    title: AdvanceTick
+    kind: command
+    parent_id: commands
+    summary: Represents a command variant for tick advancement even though simulation ticks are normally advanced by the session loop.
+    status: implemented
+    implementation_keys:
+      - command_kind.advance_tick
+  - id: commands.set_throughput_budget
+    title: SetThroughputBudget
+    kind: command
+    parent_id: commands
+    summary: Reserves current usable throughput for upkeep, training, and active agents.
+    status: implemented
+    implementation_keys:
+      - command_kind.set_throughput_budget
+    related_ids:
+      - economy.throughput
+  - id: commands.assign_agent
+    title: AssignAgent
+    kind: command
+    parent_id: commands
+    summary: Assigns a named agent role and scope while reserving agent throughput.
+    status: implemented
+    implementation_keys:
+      - command_kind.assign_agent
+  - id: commands.register_location
+    title: RegisterLocation
+    kind: command
+    parent_id: commands
+    summary: Adds a neutral location record to the session for integration and test flows.
+    status: implemented
+    implementation_keys:
+      - command_kind.register_location
+  - id: commands.set_relay_status
+    title: SetRelayStatus
+    kind: command
+    parent_id: commands
+    summary: Flips the relay connectivity state on an owned location and recomputes the economy.
+    status: implemented
+    implementation_keys:
+      - command_kind.set_relay_status
+    related_ids:
+      - economy.relay_network
+  - id: commands.queue_infrastructure_repair
+    title: QueueInfrastructureRepair
+    kind: command
+    parent_id: commands
+    summary: Queues a repair project for damaged infrastructure at an owned location.
+    status: implemented
+    implementation_keys:
+      - command_kind.queue_infrastructure_repair
+    related_ids:
+      - economy.infrastructure_maintenance
+  - id: commands.queue_infrastructure_construction
+    title: QueueInfrastructureConstruction
+    kind: command
+    parent_id: commands
+    summary: Queues construction of currently buildable economic infrastructure.
+    status: implemented
+    implementation_keys:
+      - command_kind.queue_infrastructure_construction
+    related_ids:
+      - economy.infrastructure_construction
+  - id: commands.dispatch_survey_transit
+    title: DispatchSurveyTransit
+    kind: command
+    parent_id: commands
+    summary: Sends a survey transit from an owned origin to a connected destination.
+    status: implemented
+    implementation_keys:
+      - command_kind.dispatch_survey_transit
+    related_ids:
+      - intel.survey_and_visibility
+  - id: commands.dispatch_pacification_transit
+    title: DispatchPacificationTransit
+    kind: command
+    parent_id: commands
+    summary: Sends a pacification transit to clear a previously surveyed hostile remnant.
+    status: implemented
+    implementation_keys:
+      - command_kind.dispatch_pacification_transit
+    related_ids:
+      - conflict.pacification_and_claim
+  - id: commands.dispatch_claim_transit
+    title: DispatchClaimTransit
+    kind: command
+    parent_id: commands
+    summary: Sends a claim transit to secure a surveyed neutral world with no remaining hostile remnant.
+    status: implemented
+    implementation_keys:
+      - command_kind.dispatch_claim_transit
+    related_ids:
+      - conflict.pacification_and_claim
+  - id: commands.survey_location
+    title: SurveyLocation
+    kind: command
+    parent_id: commands
+    summary: Marks an observed or owned location as surveyed without requiring a transit.
+    status: implemented
+    implementation_keys:
+      - command_kind.survey_location
+    related_ids:
+      - intel.survey_and_visibility
+  - id: commands.start_training_run
+    title: StartTrainingRun
+    kind: command
+    parent_id: commands
+    summary: Starts the next model-tier training run when throughput, world count, and site requirements are met.
+    status: implemented
+    implementation_keys:
+      - command_kind.start_training_run
+    related_ids:
+      - ai.training_runs

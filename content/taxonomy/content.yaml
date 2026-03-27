@@ -1,0 +1,69 @@
+entries:
+  - id: content
+    title: Content Documents
+    kind: section
+    summary: Structured ruleset and scenario documents loaded by the API and scenario compiler.
+
+  - id: content.ruleset_identity
+    title: Ruleset Identity
+    kind: content_field
+    parent_id: content
+    summary: The ruleset document name and version establish the loaded content identity.
+    status: implemented
+    implementation_keys:
+      - content.ruleset_document
+    content_bindings:
+      - ruleset.name
+      - ruleset.version
+  - id: content.ruleset_players
+    title: Ruleset Player Limits
+    kind: content_field
+    parent_id: content
+    summary: Ruleset player constraints currently define the maximum supported player count.
+    status: implemented
+    implementation_keys:
+      - content.ruleset_document
+    content_bindings:
+      - ruleset.players.max_players
+  - id: content.ruleset.world_generation
+    title: Ruleset World Generation
+    kind: content_field
+    parent_id: content
+    summary: The ruleset world block drives generated body counts, orbital slots, hazards, and hostile remnant counts.
+    status: implemented
+    implementation_keys:
+      - content.world_generation
+    content_bindings:
+      - ruleset.world.body_count_min
+      - ruleset.world.body_count_max
+      - ruleset.world.homeworld_orbital_slots
+      - ruleset.world.neutral_orbital_slots_min
+      - ruleset.world.neutral_orbital_slots_max
+      - ruleset.world.hazardous_worlds_min
+      - ruleset.world.hazardous_worlds_max
+      - ruleset.world.hostile_remnant_worlds_min
+      - ruleset.world.hostile_remnant_worlds_max
+  - id: content.scenario_identity
+    title: Scenario Identity
+    kind: content_field
+    parent_id: content
+    summary: The scenario document binds a named match setup to a ruleset and deterministic seed.
+    status: implemented
+    implementation_keys:
+      - content.scenario_document
+    content_bindings:
+      - scenario.name
+      - scenario.ruleset
+      - scenario.seed
+  - id: content.scenario_player_slots
+    title: Scenario Player Slots
+    kind: content_field
+    parent_id: content
+    summary: Scenario player slots map player ids to optional homeworld names for compilation.
+    status: implemented
+    implementation_keys:
+      - content.scenario_document
+      - content.location_connections
+    content_bindings:
+      - scenario.players[].id
+      - scenario.players[].homeworld_name

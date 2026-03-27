@@ -1,17 +1,15 @@
 [package]
-name = "starforge-api"
+name = "starforge-taxonomy"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-axum.workspace = true
+schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 starforge-content = { path = "../starforge-content" }
 starforge-core = { path = "../starforge-core" }
-starforge-taxonomy = { path = "../starforge-taxonomy" }
-tokio.workspace = true
-
-[dev-dependencies]
-tower = { version = "0.5.2", features = ["util"] }
+strum.workspace = true

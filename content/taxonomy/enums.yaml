@@ -1,0 +1,173 @@
+entries:
+  - id: enums
+    title: Enumerations
+    kind: section
+    summary: Enumerated engine vocabularies that shape content, map state, and player projections.
+
+  - id: enums.location_kind
+    title: Location Kind
+    kind: enum_category
+    parent_id: enums
+    summary: Strategic body classes available on the current map model.
+    status: implemented
+    reference_sections:
+      - Solar System Structure
+      - Planetary Attributes
+    implementation_keys:
+      - location_kind.habitable_planet
+      - location_kind.barren_world
+      - location_kind.volcanic_world
+      - location_kind.ice_world
+      - location_kind.moon
+      - location_kind.asteroid_cluster
+      - location_kind.gas_giant
+  - id: enums.infrastructure_kind
+    title: Infrastructure Kind
+    kind: enum_category
+    parent_id: enums
+    summary: Infrastructure families currently represented in seeded starts and runtime projects.
+    status: implemented
+    reference_sections:
+      - Orbital Installations
+      - Infrastructure Families
+    implementation_keys:
+      - infrastructure_kind.command_nexus
+      - infrastructure_kind.mining_site
+      - infrastructure_kind.energy_producer
+      - infrastructure_kind.datacenter
+      - infrastructure_kind.relay_uplink
+      - infrastructure_kind.shipyard_ring
+      - infrastructure_kind.military_works
+      - infrastructure_kind.ground_defense_site
+  - id: enums.infrastructure_condition
+    title: Infrastructure Condition
+    kind: enum_category
+    parent_id: enums
+    summary: Runtime wear states that gate output and project eligibility.
+    status: implemented
+    reference_sections:
+      - Maintenance and Wear
+    implementation_keys:
+      - infrastructure_condition.operational
+      - infrastructure_condition.degraded
+      - infrastructure_condition.offline
+  - id: enums.hostile_remnant_kind
+    title: Hostile Remnant Kind
+    kind: enum_category
+    parent_id: enums
+    summary: Neutral hostile presences currently used during world generation and pacification flows.
+    status: implemented
+    reference_sections:
+      - Solar System Structure
+    implementation_keys:
+      - hostile_remnant_kind.autonomous_defense_cluster
+      - hostile_remnant_kind.rogue_colony
+      - hostile_remnant_kind.dormant_military_ruin
+  - id: enums.threat_level
+    title: Threat Level
+    kind: enum_category
+    parent_id: enums
+    summary: Threat bands assigned to hostile remnants during generation.
+    status: implemented
+    implementation_keys:
+      - threat_level.low
+      - threat_level.medium
+      - threat_level.high
+  - id: enums.resource_richness
+    title: Resource Richness
+    kind: enum_category
+    parent_id: enums
+    summary: Resource abundance bands used by extraction and starting stockpile logic.
+    status: implemented
+    reference_sections:
+      - Resource Types
+      - Planetary Output
+    implementation_keys:
+      - resource_richness.sparse
+      - resource_richness.moderate
+      - resource_richness.rich
+  - id: enums.energy_potential
+    title: Energy Potential
+    kind: enum_category
+    parent_id: enums
+    summary: Local energy modifiers used when computing power generation output.
+    status: implemented
+    reference_sections:
+      - Planetary Attributes
+      - Energy and Datacenter Relationship
+    implementation_keys:
+      - energy_potential.low
+      - energy_potential.moderate
+      - energy_potential.high
+  - id: enums.build_capacity
+    title: Build Capacity
+    kind: enum_category
+    parent_id: enums
+    summary: Local construction and datacenter-capacity modifiers by world.
+    status: implemented
+    reference_sections:
+      - Planetary Attributes
+      - Construction Rule
+    implementation_keys:
+      - build_capacity.constrained
+      - build_capacity.standard
+      - build_capacity.expansive
+  - id: enums.strategic_position
+    title: Strategic Position
+    kind: enum_category
+    parent_id: enums
+    summary: Relative map-position bands used during starting-world generation.
+    status: implemented
+    implementation_keys:
+      - strategic_position.peripheral
+      - strategic_position.balanced
+      - strategic_position.central
+  - id: enums.territory_state
+    title: Territory State
+    kind: enum_category
+    parent_id: enums
+    summary: Player-relative control states for map locations and fogged projections.
+    status: implemented
+    reference_sections:
+      - Territory States
+    implementation_keys:
+      - territory_state.neutral
+      - territory_state.owned
+      - territory_state.contested
+      - territory_state.destroyed
+      - territory_state.obscured
+  - id: enums.relay_status
+    title: Relay Status
+    kind: enum_category
+    parent_id: enums
+    summary: Connection state used by empire-economy calculations.
+    status: implemented
+    reference_sections:
+      - Relay Network Rule
+    implementation_keys:
+      - relay_status.connected
+      - relay_status.disconnected
+  - id: enums.location_visibility
+    title: Location Visibility
+    kind: enum_category
+    parent_id: enums
+    summary: Read-model visibility states exposed through player location projections.
+    status: implemented
+    reference_sections:
+      - Information States
+      - Visibility by Control State
+    implementation_keys:
+      - location_visibility.owned
+      - location_visibility.observed
+      - location_visibility.surveyed
+      - location_visibility.obscured
+  - id: enums.transit_kind
+    title: Transit Kind
+    kind: enum_category
+    parent_id: enums
+    summary: Transit purposes currently supported by the session command pipeline.
+    status: implemented
+    implementation_keys:
+      - transit_kind.survey
+      - transit_kind.pacification
+      - transit_kind.claim

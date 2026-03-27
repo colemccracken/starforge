@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoStaticStr};
 
 use crate::{LocationConnection, MatchSeed, PlayerId, StartingLocation, TickId};
 
@@ -414,7 +415,8 @@ pub struct LocationView {
     pub hostile_remnant_present: Option<bool>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, EnumIter, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum LocationVisibility {
     Owned,
     Observed,
@@ -431,7 +433,10 @@ pub struct TransitView {
     pub kind: TransitKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum TransitKind {
     Survey,
     Pacification,
@@ -595,7 +600,10 @@ impl ResourceStockpiles {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum LocationKind {
     HabitablePlanet,
     BarrenWorld,
@@ -606,7 +614,10 @@ pub enum LocationKind {
     GasGiant,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum InfrastructureKind {
     CommandNexus,
     MiningSite,
@@ -618,56 +629,80 @@ pub enum InfrastructureKind {
     GroundDefenseSite,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum InfrastructureCondition {
     Operational,
     Degraded,
     Offline,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum HostileRemnantKind {
     AutonomousDefenseCluster,
     RogueColony,
     DormantMilitaryRuin,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum ThreatLevel {
     Low,
     Medium,
     High,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum ResourceRichness {
     Sparse,
     Moderate,
     Rich,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum EnergyPotential {
     Low,
     Moderate,
     High,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum BuildCapacity {
     Constrained,
     Standard,
     Expansive,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum StrategicPosition {
     Peripheral,
     Balanced,
     Central,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum TerritoryState {
     Neutral,
     Owned,
@@ -676,7 +711,20 @@ pub enum TerritoryState {
     Obscured,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum RelayStatus {
     #[default]
     Connected,
