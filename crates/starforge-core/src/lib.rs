@@ -392,6 +392,38 @@ mod tests {
         }
     }
 
+    fn contested_major_visibility_fixture_scenario() -> ScenarioConfig {
+        let mut defender_homeworld = compute_homeworld(
+            PlayerId::new(2),
+            2,
+            "Selene",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        defender_homeworld
+            .starting_infrastructure
+            .push(infrastructure_seed(InfrastructureKind::MiningSite));
+
+        ScenarioConfig {
+            starting_locations: vec![
+                compute_homeworld(
+                    PlayerId::new(1),
+                    1,
+                    "Helios",
+                    EnergyPotential::High,
+                    BuildCapacity::Expansive,
+                ),
+                defender_homeworld,
+            ],
+            connections: vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 1,
+            }],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
     fn undefended_enemy_world_scenario() -> ScenarioConfig {
         let mut enemy_world = compute_homeworld(
             PlayerId::new(2),
@@ -2176,7 +2208,7 @@ mod tests {
             attacker_location.contesting_players,
             Some(vec![PlayerId::new(1)])
         );
-        assert_eq!(attacker_location.relay_status, None);
+        assert_eq!(attacker_location.relay_status, Some(RelayStatus::Connected));
         assert_eq!(attacker_location.economy, None);
         assert_eq!(attacker_location.infrastructure_projects, None);
         assert_eq!(attacker_location.stockpiles, None);
@@ -2196,6 +2228,142 @@ mod tests {
                 attacker_id,
                 defender_id,
             } if *attacker_id == PlayerId::new(1) && *defender_id == Some(PlayerId::new(2))
+        )));
+    }
+
+    #[test]
+    fn contested_projection_reveals_major_state_but_hides_local_detail() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            contested_major_visibility_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(1);
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchAssaultTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("assault transit should be accepted");
+        session.advance_ticks(1);
+
+        let attacker_view = session
+            .player_view(PlayerId::new(1))
+            .expect("attacker view should be available");
+        let attacker_location = attacker_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("attacker should see contested location");
+
+        let visible_infrastructure = attacker_location
+            .infrastructure
+            .clone()
+            .expect("contested projection should retain major infrastructure");
+        assert_eq!(attacker_location.visibility, LocationVisibility::Observed);
+        assert_eq!(attacker_location.territory, TerritoryState::Contested);
+        assert_eq!(attacker_location.relay_status, Some(RelayStatus::Connected));
+        assert_eq!(attacker_location.economy, None);
+        assert_eq!(attacker_location.infrastructure_projects, None);
+        assert_eq!(attacker_location.stockpiles, None);
+        assert!(
+            visible_infrastructure
+                .iter()
+                .any(|infrastructure| { infrastructure.kind == InfrastructureKind::CommandNexus })
+        );
+        assert!(
+            visible_infrastructure
+                .iter()
+                .any(|infrastructure| { infrastructure.kind == InfrastructureKind::Datacenter })
+        );
+        assert!(
+            visible_infrastructure.iter().any(|infrastructure| {
+                infrastructure.kind == InfrastructureKind::EnergyProducer
+            })
+        );
+        assert!(
+            visible_infrastructure
+                .iter()
+                .all(|infrastructure| { infrastructure.kind != InfrastructureKind::MiningSite })
+        );
+    }
+
+    #[test]
+    fn major_structure_completion_is_visible_during_contest_but_minor_completion_is_hidden() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            contested_major_visibility_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(2),
+                CommandKind::QueueInfrastructureConstruction {
+                    location_id: 2,
+                    infrastructure_kind: InfrastructureKind::MiningSite,
+                },
+            )
+            .expect("minor construction should queue");
+        session
+            .issue_command_now(
+                PlayerId::new(2),
+                CommandKind::QueueInfrastructureConstruction {
+                    location_id: 2,
+                    infrastructure_kind: InfrastructureKind::Datacenter,
+                },
+            )
+            .expect("major construction should queue");
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(1);
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchAssaultTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("assault transit should be accepted");
+        session.advance_ticks(3);
+
+        let attacker_events = session
+            .player_events(PlayerId::new(1), TickId::default())
+            .expect("attacker event feed should be available");
+        assert!(attacker_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InfrastructureConstructionCompleted {
+                location_id: 2,
+                kind,
+            } if *kind == InfrastructureKind::Datacenter
+        )));
+        assert!(!attacker_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InfrastructureConstructionCompleted {
+                location_id: 2,
+                kind,
+            } if *kind == InfrastructureKind::MiningSite
         )));
     }
 

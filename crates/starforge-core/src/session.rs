@@ -2230,9 +2230,7 @@ impl GameSession {
             | EventKind::EconomyUpdated { .. }
             | EventKind::AgentAssigned { .. }
             | EventKind::InfrastructureRepairQueued { .. }
-            | EventKind::InfrastructureRepairCompleted { .. }
             | EventKind::InfrastructureConstructionQueued { .. }
-            | EventKind::InfrastructureConstructionCompleted { .. }
             | EventKind::TransitDispatched { .. }
             | EventKind::TransitArrived { .. }
             | EventKind::LocationSurveyed { .. }
@@ -2240,12 +2238,21 @@ impl GameSession {
             | EventKind::TrainingRunCompleted { .. } => event.player_id == Some(player_id),
             EventKind::LocationRegistered { .. } => event.player_id == Some(player_id),
             EventKind::RelayStatusChanged { location_id, .. }
-            | EventKind::InfrastructureConditionChanged { location_id, .. }
             | EventKind::HostileRemnantCleared { location_id }
             | EventKind::LocationClaimed { location_id, .. }
             | EventKind::LocationContested { location_id, .. }
             | EventKind::PacificationCompleted { location_id, .. } => {
                 self.location_is_observed_by_player(player_id, *location_id)
+            }
+            EventKind::InfrastructureConditionChanged {
+                location_id, kind, ..
+            }
+            | EventKind::InfrastructureRepairCompleted { location_id, kind }
+            | EventKind::InfrastructureConstructionCompleted { location_id, kind } => {
+                self.location_is_controlled_by_player(player_id, *location_id)
+                    || (self.location_is_currently_contested(*location_id)
+                        && self.location_is_observed_by_player(player_id, *location_id)
+                        && is_major_visibility_infrastructure(kind))
             }
             EventKind::LocationCaptured {
                 location_id,
@@ -2298,6 +2305,23 @@ impl GameSession {
                     })
             })
             .unwrap_or(false)
+    }
+
+    fn location_is_controlled_by_player(&self, player_id: PlayerId, location_id: u32) -> bool {
+        self.state.locations.iter().any(|location| {
+            location.location_id == location_id
+                && location.controller == Some(player_id)
+                && matches!(
+                    location.territory,
+                    TerritoryState::Owned | TerritoryState::Contested
+                )
+        })
+    }
+
+    fn location_is_currently_contested(&self, location_id: u32) -> bool {
+        self.state.locations.iter().any(|location| {
+            location.location_id == location_id && location.territory == TerritoryState::Contested
+        })
     }
 
     fn controlled_location_state(
@@ -2533,11 +2557,7 @@ fn project_location_for_player(
             resource_richness: Some(location.resource_richness.clone()),
             energy_potential: Some(location.energy_potential.clone()),
             build_capacity: Some(location.build_capacity.clone()),
-            relay_status: if restricted_contested_view {
-                None
-            } else {
-                Some(location.relay_status.clone())
-            },
+            relay_status: Some(location.relay_status.clone()),
             orbital_slots: Some(location.orbital_slots),
             has_environmental_hazard: Some(location.has_environmental_hazard),
             infrastructure: Some(if restricted_contested_view {
@@ -2622,12 +2642,26 @@ fn sanitize_contested_infrastructure(
 ) -> Vec<crate::InfrastructureState> {
     infrastructure
         .iter()
+        .filter(|infrastructure| is_major_visibility_infrastructure(&infrastructure.kind))
         .cloned()
         .map(|mut infrastructure| {
             infrastructure.wear = 0;
             infrastructure
         })
         .collect()
+}
+
+const fn is_major_visibility_infrastructure(kind: &InfrastructureKind) -> bool {
+    matches!(
+        kind,
+        InfrastructureKind::CommandNexus
+            | InfrastructureKind::EnergyProducer
+            | InfrastructureKind::Datacenter
+            | InfrastructureKind::RelayUplink
+            | InfrastructureKind::ShipyardRing
+            | InfrastructureKind::MilitaryWorks
+            | InfrastructureKind::GroundDefenseSite
+    )
 }
 
 fn ensure_colony_infrastructure(location: &mut LocationState) {
