@@ -4,192 +4,111 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use clap::Parser;
 use starforge_core::{
-    CommandKind, GameSession, InfrastructureCondition, InfrastructureKind, LocationView, PlayerId,
-    RelayStatus, SessionId, TickId, TransitKind, VictoryState,
+    CommandKind, GameSession, InfrastructureCondition, LocationView, PlayerId, SessionId, TickId,
+    TransitKind, VictoryState,
 };
 use starforge_scenarios::starter_skirmish_harness;
+
+use crate::cli::{Cli, Command as CliCommand};
+
+mod cli;
 
 type DynError = Box<dyn Error>;
 
 fn main() {
-    if let Err(error) = run() {
+    let cli = Cli::try_parse().unwrap_or_else(|error| error.exit());
+
+    if let Err(error) = run(cli) {
         eprintln!("error: {error}");
-        eprintln!();
-        eprintln!("{}", usage());
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), DynError> {
-    let args: Vec<String> = std::env::args().collect();
-    let Some(command) = args.get(1).map(String::as_str) else {
-        print!("{}", usage());
-        return Ok(());
-    };
-
-    match command {
-        "new" => cmd_new(args.get(2).map(PathBuf::from)),
-        "status" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            cmd_status(&session_path, player_id)
-        }
-        "map" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            cmd_map(&session_path, player_id)
-        }
-        "events" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let from_tick = args
-                .get(4)
-                .map(|value| parse_u64(value, "from_tick"))
-                .transpose()?
-                .unwrap_or(0);
-            cmd_events(&session_path, player_id, TickId::new(from_tick))
-        }
-        "step" => {
-            let session_path = required_path(&args, 2)?;
-            let ticks = parse_u32(required_arg(&args, 3, "ticks")?, "ticks")?;
-            cmd_step(&session_path, ticks)
-        }
-        "survey" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let origin = parse_u32(required_arg(&args, 4, "origin_location_id")?, "origin")?;
-            let destination = parse_u32(
-                required_arg(&args, 5, "destination_location_id")?,
-                "destination",
-            )?;
-            cmd_mutate(
-                &session_path,
-                player_id,
-                CommandKind::DispatchSurveyTransit {
-                    origin_location_id: origin,
-                    destination_location_id: destination,
-                },
-                "survey expedition queued",
-            )
-        }
-        "pacify" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let origin = parse_u32(required_arg(&args, 4, "origin_location_id")?, "origin")?;
-            let destination = parse_u32(
-                required_arg(&args, 5, "destination_location_id")?,
-                "destination",
-            )?;
-            cmd_mutate(
-                &session_path,
-                player_id,
-                CommandKind::DispatchPacificationTransit {
-                    origin_location_id: origin,
-                    destination_location_id: destination,
-                },
-                "pacification expedition queued",
-            )
-        }
-        "claim" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let origin = parse_u32(required_arg(&args, 4, "origin_location_id")?, "origin")?;
-            let destination = parse_u32(
-                required_arg(&args, 5, "destination_location_id")?,
-                "destination",
-            )?;
-            cmd_mutate(
-                &session_path,
-                player_id,
-                CommandKind::DispatchClaimTransit {
-                    origin_location_id: origin,
-                    destination_location_id: destination,
-                },
-                "claim expedition queued",
-            )
-        }
-        "build" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let location_id = parse_u32(required_arg(&args, 4, "location_id")?, "location_id")?;
-            let kind = parse_infrastructure_kind(required_arg(&args, 5, "infrastructure_kind")?)?;
-            cmd_mutate(
-                &session_path,
-                player_id,
-                CommandKind::QueueInfrastructureConstruction {
-                    location_id,
-                    infrastructure_kind: kind,
-                },
-                "construction queued",
-            )
-        }
-        "repair" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let location_id = parse_u32(required_arg(&args, 4, "location_id")?, "location_id")?;
-            let kind = parse_infrastructure_kind(required_arg(&args, 5, "infrastructure_kind")?)?;
-            cmd_mutate(
-                &session_path,
-                player_id,
-                CommandKind::QueueInfrastructureRepair {
-                    location_id,
-                    infrastructure_kind: kind,
-                },
-                "repair queued",
-            )
-        }
-        "relay" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let location_id = parse_u32(required_arg(&args, 4, "location_id")?, "location_id")?;
-            let relay_status = parse_relay_status(required_arg(&args, 5, "relay_status")?)?;
-            cmd_mutate(
-                &session_path,
-                player_id,
-                CommandKind::SetRelayStatus {
-                    location_id,
-                    relay_status,
-                },
-                "relay status updated",
-            )
-        }
-        "budget" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let upkeep = parse_u32(
-                required_arg(&args, 4, "reserved_for_model_upkeep")?,
-                "upkeep",
-            )?;
-            let training = parse_u32(required_arg(&args, 5, "reserved_for_training")?, "training")?;
-            let agents = parse_u32(required_arg(&args, 6, "reserved_for_agents")?, "agents")?;
-            cmd_mutate(
-                &session_path,
-                player_id,
-                CommandKind::SetThroughputBudget {
-                    reserved_for_model_upkeep: upkeep,
-                    reserved_for_training: training,
-                    reserved_for_agents: agents,
-                },
-                "throughput budget updated",
-            )
-        }
-        "train" => {
-            let session_path = required_path(&args, 2)?;
-            let player_id = parse_player_id(required_arg(&args, 3, "player_id")?)?;
-            let target_tier = parse_u8(required_arg(&args, 4, "target_tier")?, "target_tier")?;
-            cmd_mutate(
-                &session_path,
-                player_id,
-                CommandKind::StartTrainingRun { target_tier },
-                "training run started",
-            )
-        }
-        "help" | "--help" | "-h" => {
-            print!("{}", usage());
-            Ok(())
-        }
-        other => Err(format!("unknown command '{other}'").into()),
+fn run(cli: Cli) -> Result<(), DynError> {
+    match cli.command {
+        CliCommand::New(args) => cmd_new(args.session),
+        CliCommand::Status(args) => cmd_status(&args.session.session, args.player),
+        CliCommand::Map(args) => cmd_map(&args.session.session, args.player),
+        CliCommand::Events(args) => cmd_events(
+            &args.common.session.session,
+            args.common.player,
+            TickId::new(args.from_tick),
+        ),
+        CliCommand::Step(args) => cmd_step(&args.session.session, args.ticks),
+        CliCommand::Survey(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchSurveyTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "survey expedition queued",
+        ),
+        CliCommand::Pacify(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchPacificationTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "pacification expedition queued",
+        ),
+        CliCommand::Claim(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchClaimTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "claim expedition queued",
+        ),
+        CliCommand::Build(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::QueueInfrastructureConstruction {
+                location_id: args.location,
+                infrastructure_kind: args.kind,
+            },
+            "construction queued",
+        ),
+        CliCommand::Repair(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::QueueInfrastructureRepair {
+                location_id: args.location,
+                infrastructure_kind: args.kind,
+            },
+            "repair queued",
+        ),
+        CliCommand::Relay(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::SetRelayStatus {
+                location_id: args.location,
+                relay_status: args.status,
+            },
+            "relay status updated",
+        ),
+        CliCommand::Budget(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: args.upkeep,
+                reserved_for_training: args.training,
+                reserved_for_agents: args.agents,
+            },
+            "throughput budget updated",
+        ),
+        CliCommand::Train(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::StartTrainingRun {
+                target_tier: args.target_tier,
+            },
+            "training run started",
+        ),
     }
 }
 
@@ -222,19 +141,25 @@ fn cmd_new(session_path: Option<PathBuf>) -> Result<(), DynError> {
     }
     println!();
     println!("Suggested first steps:");
-    println!("  starforge-cli map {} 1", session_path.display());
-    println!("  starforge-cli status {} 1", session_path.display());
+    println!(
+        "  starforge-cli map --session {} --player 1",
+        session_path.display()
+    );
+    println!(
+        "  starforge-cli status --session {} --player 1",
+        session_path.display()
+    );
     if let Some((origin_id, destination_id, travel_time)) =
         first_recommended_route(&session, PlayerId::new(1))
     {
         println!(
-            "  starforge-cli survey {} 1 {} {}",
+            "  starforge-cli survey --session {} --player 1 --origin {} --destination {}",
             session_path.display(),
             origin_id,
             destination_id
         );
         println!(
-            "  starforge-cli step {} {}",
+            "  starforge-cli step --session {} --ticks {}",
             session_path.display(),
             travel_time
         );
@@ -383,68 +308,6 @@ fn save_session(session_path: &Path, session: &GameSession) -> Result<(), DynErr
 
     fs::write(session_path, session.snapshot_json()?)?;
     Ok(())
-}
-
-fn required_arg<'a>(args: &'a [String], index: usize, name: &str) -> Result<&'a str, DynError> {
-    args.get(index)
-        .map(String::as_str)
-        .ok_or_else(|| format!("missing required argument: {name}").into())
-}
-
-fn required_path(args: &[String], index: usize) -> Result<PathBuf, DynError> {
-    Ok(PathBuf::from(required_arg(args, index, "session_path")?))
-}
-
-fn parse_player_id(value: &str) -> Result<PlayerId, DynError> {
-    Ok(PlayerId::new(parse_u8(value, "player_id")?))
-}
-
-fn parse_u8(value: &str, name: &str) -> Result<u8, DynError> {
-    value
-        .parse::<u8>()
-        .map_err(|_| format!("invalid {name}: '{value}'").into())
-}
-
-fn parse_u32(value: &str, name: &str) -> Result<u32, DynError> {
-    value
-        .parse::<u32>()
-        .map_err(|_| format!("invalid {name}: '{value}'").into())
-}
-
-fn parse_u64(value: &str, name: &str) -> Result<u64, DynError> {
-    value
-        .parse::<u64>()
-        .map_err(|_| format!("invalid {name}: '{value}'").into())
-}
-
-fn parse_infrastructure_kind(value: &str) -> Result<InfrastructureKind, DynError> {
-    match normalize_token(value).as_str() {
-        "commandnexus" => Ok(InfrastructureKind::CommandNexus),
-        "miningsite" => Ok(InfrastructureKind::MiningSite),
-        "energyproducer" => Ok(InfrastructureKind::EnergyProducer),
-        "datacenter" => Ok(InfrastructureKind::Datacenter),
-        "relayuplink" => Ok(InfrastructureKind::RelayUplink),
-        "shipyardring" => Ok(InfrastructureKind::ShipyardRing),
-        "militaryworks" => Ok(InfrastructureKind::MilitaryWorks),
-        "grounddefensesite" => Ok(InfrastructureKind::GroundDefenseSite),
-        _ => Err(format!("unknown infrastructure kind '{value}'").into()),
-    }
-}
-
-fn parse_relay_status(value: &str) -> Result<RelayStatus, DynError> {
-    match normalize_token(value).as_str() {
-        "connected" => Ok(RelayStatus::Connected),
-        "disconnected" => Ok(RelayStatus::Disconnected),
-        _ => Err(format!("unknown relay status '{value}'").into()),
-    }
-}
-
-fn normalize_token(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(|character| character.to_lowercase())
-        .collect()
 }
 
 fn default_session_path() -> PathBuf {
@@ -768,35 +631,4 @@ fn render_event(event: &starforge_core::EventKind) -> String {
             format!("victory declared for P{} ({})", winner.0, reason)
         }
     }
-}
-
-fn usage() -> String {
-    let text = r#"Starforge CLI
-
-Usage:
-  starforge-cli new [session_path]
-  starforge-cli status <session_path> <player_id>
-  starforge-cli map <session_path> <player_id>
-  starforge-cli events <session_path> <player_id> [from_tick]
-  starforge-cli step <session_path> <ticks>
-  starforge-cli survey <session_path> <player_id> <origin_location_id> <destination_location_id>
-  starforge-cli pacify <session_path> <player_id> <origin_location_id> <destination_location_id>
-  starforge-cli claim <session_path> <player_id> <origin_location_id> <destination_location_id>
-  starforge-cli build <session_path> <player_id> <location_id> <infrastructure_kind>
-  starforge-cli repair <session_path> <player_id> <location_id> <infrastructure_kind>
-  starforge-cli relay <session_path> <player_id> <location_id> <connected|disconnected>
-  starforge-cli budget <session_path> <player_id> <upkeep> <training> <agents>
-  starforge-cli train <session_path> <player_id> <target_tier>
-
-Prototype loop:
-  1. Create a session with `new`.
-  2. Use `map` and `status` to inspect player-visible state.
-  3. `survey` nearby neutral worlds, then `step` until arrival.
-  4. If a surveyed world has `remnant=true`, use `pacify` and `step`.
-  5. `claim` cleared neutral worlds, then expand with `build` and `repair`.
-  6. Raise training budget with `budget`, then start `train` for tiers 2 through 5.
-  7. A completed tier 5 training run ends the match immediately.
-"#;
-
-    text.to_owned()
 }

@@ -6,5 +6,11 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
 starforge-core = { path = "../starforge-core" }
 starforge-scenarios = { path = "../starforge-scenarios" }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
