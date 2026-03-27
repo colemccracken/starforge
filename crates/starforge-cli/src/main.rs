@@ -9,14 +9,18 @@ use reqwest::blocking::Client;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use starforge_api::{
-    ApiSessionSummary, IssueCommandRequest, SessionControlState, StepSessionRequest,
+    ApiSessionSummary, IssueCommandRequest, SaveSessionResponse, SessionControlState,
+    SessionMetrics, StepSessionRequest,
 };
 use starforge_core::{
     CommandCollapseState, CommandKind, EventRecord, GameSession, InfrastructureCondition,
     LocationConnection, LocationView, PlayerId, PlayerStateView, SessionId, TickId, TransitKind,
     VictoryState,
 };
-use starforge_scenarios::starter_skirmish_harness;
+use starforge_scenarios::{
+    ScenarioHarness, default_ruleset_path, default_scenario_path, load_harness,
+    starter_skirmish_harness,
+};
 
 use crate::cli::{Cli, Command as CliCommand};
 
@@ -50,6 +54,15 @@ fn run_file(command: CliCommand) -> Result<(), DynError> {
             &args.common.session.session,
             args.common.player,
             TickId::new(args.from_tick),
+        ),
+        CliCommand::Metrics(args) => cmd_metrics(&args.session),
+        CliCommand::Save(args) => cmd_save(&args.session.session, args.output.as_deref()),
+        CliCommand::Load(args) => cmd_load(&args.input, args.session.as_deref()),
+        CliCommand::ScenarioRun(args) => cmd_scenario_run(
+            args.ruleset.as_deref(),
+            args.scenario.as_deref(),
+            args.session,
+            args.ticks,
         ),
         CliCommand::Run(args) => cmd_run(&args.session),
         CliCommand::Pause(args) => cmd_pause(&args.session),
@@ -157,6 +170,18 @@ fn run_api(api_base: &str, command: CliCommand) -> Result<(), DynError> {
             &args.common.session.session,
             args.common.player,
             TickId::new(args.from_tick),
+        ),
+        CliCommand::Metrics(args) => cmd_metrics_api(api_base, &args.session),
+        CliCommand::Save(args) => {
+            cmd_save_api(api_base, &args.session.session, args.output.as_deref())
+        }
+        CliCommand::Load(args) => cmd_load_api(api_base, &args.input, args.session.as_deref()),
+        CliCommand::ScenarioRun(args) => cmd_scenario_run_api(
+            api_base,
+            args.ruleset.as_deref(),
+            args.scenario.as_deref(),
+            args.session,
+            args.ticks,
         ),
         CliCommand::Run(args) => cmd_run_api(api_base, &args.session),
         CliCommand::Pause(args) => cmd_pause_api(api_base, &args.session),
@@ -273,49 +298,7 @@ fn cmd_new(session_path: Option<PathBuf>) -> Result<(), DynError> {
     let harness = starter_skirmish_harness()?;
     let session = harness.instantiate_session(SessionId::new(1));
     save_session(&session_path, &session)?;
-
-    println!("Created session at {}", session_path.display());
-    println!("Scenario: {}", harness.name);
-    println!("Players:");
-    for location in session
-        .state()
-        .locations
-        .iter()
-        .filter(|location| location.homeworld_of.is_some())
-    {
-        let player_id = location
-            .homeworld_of
-            .expect("homeworld should map to a player");
-        println!(
-            "  P{} homeworld: {} (# {})",
-            player_id.0, location.name, location.location_id
-        );
-    }
-    println!();
-    println!("Suggested first steps:");
-    println!(
-        "  starforge-cli map --session {} --player 1",
-        session_path.display()
-    );
-    println!(
-        "  starforge-cli status --session {} --player 1",
-        session_path.display()
-    );
-    if let Some((origin_id, destination_id, travel_time)) =
-        first_recommended_route(&session, PlayerId::new(1))
-    {
-        println!(
-            "  starforge-cli survey --session {} --player 1 --origin {} --destination {}",
-            session_path.display(),
-            origin_id,
-            destination_id
-        );
-        println!(
-            "  starforge-cli step --session {} --ticks {}",
-            session_path.display(),
-            travel_time
-        );
-    }
+    print_created_session(&session_path, &harness, &session, "Created session at");
     Ok(())
 }
 
@@ -370,6 +353,90 @@ fn cmd_events(session_path: &Path, player_id: PlayerId, from_tick: TickId) -> Re
         println!("[{}] {}", event.tick_id.0, render_event(&event.kind));
     }
 
+    Ok(())
+}
+
+fn cmd_metrics(session_path: &Path) -> Result<(), DynError> {
+    let session = load_session(session_path)?;
+    let snapshot = session.snapshot();
+    let metrics = SessionMetrics {
+        session_id: session.session_id(),
+        current_tick: session.current_tick(),
+        control_state: SessionControlState::Paused,
+        event_count: session.event_log().len(),
+        accepted_command_count: session.replay_log().accepted_commands.len(),
+        pending_command_count: snapshot.pending_commands.len(),
+        transit_count: session.state().transits.len(),
+    };
+    print_metrics(&session_path.display().to_string(), &metrics);
+    Ok(())
+}
+
+fn cmd_save(session_path: &Path, output_path: Option<&Path>) -> Result<(), DynError> {
+    let session = load_session(session_path)?;
+    let output_path = output_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_snapshot_output_path(session_path));
+    write_snapshot_json(&output_path, &session.snapshot_json()?)?;
+    println!(
+        "Saved snapshot for session {} to {}",
+        session.session_id().0,
+        output_path.display()
+    );
+    Ok(())
+}
+
+fn cmd_load(input_path: &Path, session_path: Option<&Path>) -> Result<(), DynError> {
+    let snapshot_json = fs::read_to_string(input_path)?;
+    let session = GameSession::from_snapshot_json(&snapshot_json)?;
+    let session_path = session_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_session_path);
+
+    if session_path.exists() {
+        return Err(format!("session file '{}' already exists", session_path.display()).into());
+    }
+
+    save_session(&session_path, &session)?;
+    println!(
+        "Loaded session {} from {} into {}",
+        session.session_id().0,
+        input_path.display(),
+        session_path.display()
+    );
+    Ok(())
+}
+
+fn cmd_scenario_run(
+    ruleset_path: Option<&Path>,
+    scenario_path: Option<&Path>,
+    session_path: Option<PathBuf>,
+    ticks: u32,
+) -> Result<(), DynError> {
+    let harness = load_cli_harness(ruleset_path, scenario_path)?;
+    let session_path = session_path.unwrap_or_else(default_session_path);
+    if session_path.exists() {
+        return Err(format!("session file '{}' already exists", session_path.display()).into());
+    }
+
+    let mut session = harness.instantiate_session(SessionId::new(1));
+    if ticks > 0 {
+        session.advance_ticks(ticks);
+    }
+    save_session(&session_path, &session)?;
+
+    print_created_session(
+        &session_path,
+        &harness,
+        &session,
+        "Created scenario session at",
+    );
+    if ticks > 0 {
+        println!(
+            "Advanced scenario session to tick {} during setup.",
+            session.current_tick().0
+        );
+    }
     Ok(())
 }
 
@@ -516,6 +583,82 @@ fn cmd_events_api(
     Ok(())
 }
 
+fn cmd_metrics_api(api_base: &str, session_arg: &Path) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let metrics: SessionMetrics = api_get_json(
+        &client,
+        &format!(
+            "{}/sessions/{}/metrics",
+            normalize_api_base(api_base),
+            session_id.0
+        ),
+    )?;
+    print_metrics(
+        &format!("#{} @ {}", session_id.0, normalize_api_base(api_base)),
+        &metrics,
+    );
+    Ok(())
+}
+
+fn cmd_save_api(
+    api_base: &str,
+    session_arg: &Path,
+    output_path: Option<&Path>,
+) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let saved: SaveSessionResponse = api_post_empty(
+        &client,
+        &format!(
+            "{}/sessions/{}/save",
+            normalize_api_base(api_base),
+            session_id.0
+        ),
+    )?;
+    let output_path = output_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_api_snapshot_output_path(session_id));
+    write_snapshot_json(&output_path, &saved.snapshot_json)?;
+    println!(
+        "Saved remote session #{} from {} to {}",
+        session_id.0,
+        normalize_api_base(api_base),
+        output_path.display()
+    );
+    Ok(())
+}
+
+fn cmd_load_api(
+    api_base: &str,
+    input_path: &Path,
+    session_path: Option<&Path>,
+) -> Result<(), DynError> {
+    if let Some(session_path) = session_path {
+        return Err(format!(
+            "api mode does not use session files; remove --session {} and rerun",
+            session_path.display()
+        )
+        .into());
+    }
+
+    let client = api_client();
+    let snapshot_json = fs::read_to_string(input_path)?;
+    let summary: ApiSessionSummary = api_post_json(
+        &client,
+        &format!("{}/sessions/load", normalize_api_base(api_base)),
+        &serde_json::json!({ "snapshot_json": snapshot_json }),
+    )?;
+    println!(
+        "Loaded remote session #{} via {} at tick {}. {}",
+        summary.session_id.0,
+        normalize_api_base(api_base),
+        summary.current_tick.0,
+        render_victory(&summary.victory)
+    );
+    Ok(())
+}
+
 fn cmd_run_api(api_base: &str, session_arg: &Path) -> Result<(), DynError> {
     let client = api_client();
     let session_id = parse_session_id_arg(session_arg)?;
@@ -535,6 +678,20 @@ fn cmd_run_api(api_base: &str, session_arg: &Path) -> Result<(), DynError> {
         render_victory(&summary.victory)
     );
     Ok(())
+}
+
+fn cmd_scenario_run_api(
+    api_base: &str,
+    _ruleset_path: Option<&Path>,
+    _scenario_path: Option<&Path>,
+    _session_path: Option<PathBuf>,
+    _ticks: u32,
+) -> Result<(), DynError> {
+    Err(format!(
+        "scenario-run is currently file-backed only; the server at {} chooses its scenario at startup",
+        normalize_api_base(api_base)
+    )
+    .into())
 }
 
 fn cmd_pause_api(api_base: &str, session_arg: &Path) -> Result<(), DynError> {
@@ -776,22 +933,116 @@ fn print_status(
     }
 }
 
+fn print_metrics(session_label: &str, metrics: &SessionMetrics) {
+    println!("Session: {session_label}");
+    println!("Tick: {}", metrics.current_tick.0);
+    println!("Control: {}", render_control_state(metrics.control_state));
+    println!("Events: {}", metrics.event_count);
+    println!("Accepted commands: {}", metrics.accepted_command_count);
+    println!("Pending commands: {}", metrics.pending_command_count);
+    println!("In-flight transits: {}", metrics.transit_count);
+}
+
 fn load_session(session_path: &Path) -> Result<GameSession, DynError> {
     let json = fs::read_to_string(session_path)?;
     Ok(GameSession::from_snapshot_json(&json)?)
 }
 
-fn save_session(session_path: &Path, session: &GameSession) -> Result<(), DynError> {
-    if let Some(parent) = session_path.parent() {
+fn write_snapshot_json(output_path: &Path, snapshot_json: &str) -> Result<(), DynError> {
+    if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(session_path, session.snapshot_json()?)?;
+    fs::write(output_path, snapshot_json)?;
     Ok(())
+}
+
+fn save_session(session_path: &Path, session: &GameSession) -> Result<(), DynError> {
+    write_snapshot_json(session_path, &session.snapshot_json()?)
 }
 
 fn default_session_path() -> PathBuf {
     PathBuf::from("starforge-session.json")
+}
+
+fn default_snapshot_output_path(session_path: &Path) -> PathBuf {
+    let parent = session_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let stem = session_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("starforge-session");
+    let file_name = format!("{stem}-snapshot.json");
+    parent.join(file_name)
+}
+
+fn default_api_snapshot_output_path(session_id: SessionId) -> PathBuf {
+    PathBuf::from(format!("session-{}-snapshot.json", session_id.0))
+}
+
+fn load_cli_harness(
+    ruleset_path: Option<&Path>,
+    scenario_path: Option<&Path>,
+) -> Result<ScenarioHarness, DynError> {
+    let ruleset_path = ruleset_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_ruleset_path);
+    let scenario_path = scenario_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_scenario_path);
+    Ok(load_harness(&ruleset_path, &scenario_path)?)
+}
+
+fn print_created_session(
+    session_path: &Path,
+    harness: &ScenarioHarness,
+    session: &GameSession,
+    headline: &str,
+) {
+    println!("{headline} {}", session_path.display());
+    println!("Scenario: {}", harness.name);
+    println!("Players:");
+    for location in session
+        .state()
+        .locations
+        .iter()
+        .filter(|location| location.homeworld_of.is_some())
+    {
+        let player_id = location
+            .homeworld_of
+            .expect("homeworld should map to a player");
+        println!(
+            "  P{} homeworld: {} (# {})",
+            player_id.0, location.name, location.location_id
+        );
+    }
+    println!();
+    println!("Suggested first steps:");
+    println!(
+        "  starforge-cli map --session {} --player 1",
+        session_path.display()
+    );
+    println!(
+        "  starforge-cli status --session {} --player 1",
+        session_path.display()
+    );
+    if let Some((origin_id, destination_id, travel_time)) =
+        first_recommended_route(session, PlayerId::new(1))
+    {
+        println!(
+            "  starforge-cli survey --session {} --player 1 --origin {} --destination {}",
+            session_path.display(),
+            origin_id,
+            destination_id
+        );
+        println!(
+            "  starforge-cli step --session {} --ticks {}",
+            session_path.display(),
+            travel_time
+        );
+    }
 }
 
 fn first_recommended_route(session: &GameSession, player_id: PlayerId) -> Option<(u32, u32, u32)> {

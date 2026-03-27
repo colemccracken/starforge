@@ -1328,6 +1328,7 @@ dependencies = [
  "predicates",
  "reqwest",
  "serde",
+ "serde_json",
  "starforge-api",
  "starforge-core",
  "starforge-scenarios",

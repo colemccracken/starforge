@@ -9,6 +9,7 @@ version.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 starforge-api = { path = "../starforge-api" }
 starforge-core = { path = "../starforge-core" }
 starforge-scenarios = { path = "../starforge-scenarios" }

@@ -8,6 +8,10 @@ const AFTER_HELP: &str = r#"Command Quick Reference:
   starforge-cli status --session <PATH> --player <PLAYER>
   starforge-cli map --session <PATH> --player <PLAYER>
   starforge-cli events --session <PATH> --player <PLAYER> [--from-tick <TICK>]
+  starforge-cli metrics --session <PATH>
+  starforge-cli save --session <PATH> [--output <PATH>]
+  starforge-cli load --input <PATH> [--session <PATH>]
+  starforge-cli scenario-run [--ruleset <PATH>] [--scenario <PATH>] [--session <PATH>] [--ticks <TICKS>]
   starforge-cli run --session <PATH>
   starforge-cli pause --session <PATH>
   starforge-cli step --session <PATH> --ticks <TICKS>
@@ -63,6 +67,10 @@ pub(crate) enum Command {
     Status(SessionPlayerArgs),
     Map(SessionPlayerArgs),
     Events(EventsArgs),
+    Metrics(SessionArg),
+    Save(SaveArgs),
+    Load(LoadArgs),
+    ScenarioRun(ScenarioRunArgs),
     Run(SessionArg),
     Pause(SessionArg),
     Step(StepArgs),
@@ -111,6 +119,34 @@ pub(crate) struct StepArgs {
     #[command(flatten)]
     pub(crate) session: SessionArg,
     #[arg(long, value_name = "TICKS")]
+    pub(crate) ticks: u32,
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct SaveArgs {
+    #[command(flatten)]
+    pub(crate) session: SessionArg,
+    #[arg(long, value_name = "PATH")]
+    pub(crate) output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct LoadArgs {
+    #[arg(long, value_name = "PATH")]
+    pub(crate) input: PathBuf,
+    #[arg(long, short = 's', value_name = "PATH")]
+    pub(crate) session: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ScenarioRunArgs {
+    #[arg(long, value_name = "PATH")]
+    pub(crate) ruleset: Option<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    pub(crate) scenario: Option<PathBuf>,
+    #[arg(long, short = 's', value_name = "PATH")]
+    pub(crate) session: Option<PathBuf>,
+    #[arg(long, default_value_t = 0, value_name = "TICKS")]
     pub(crate) ticks: u32,
 }
 
@@ -209,9 +245,9 @@ mod tests {
     use starforge_core::{InfrastructureKind, PlayerId, RelayStatus};
 
     use super::{
-        BudgetArgs, Cli, Command, EventsArgs, InfrastructureArgs, NewArgs, RelayArgs, SessionArg,
-        SessionPlayerArgs, StepArgs, TrainArgs, TransitArgs, parse_infrastructure_kind,
-        parse_relay_status,
+        BudgetArgs, Cli, Command, EventsArgs, InfrastructureArgs, LoadArgs, NewArgs, RelayArgs,
+        SaveArgs, ScenarioRunArgs, SessionArg, SessionPlayerArgs, StepArgs, TrainArgs, TransitArgs,
+        parse_infrastructure_kind, parse_relay_status,
     };
 
     fn parse_ok(args: &[&str]) -> Cli {
@@ -277,6 +313,90 @@ mod tests {
                 api_base: None,
                 command: Command::Run(SessionArg {
                     session: PathBuf::from("session.json"),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn metrics_accepts_short_session_alias() {
+        assert_eq!(
+            parse_ok(&["starforge-cli", "metrics", "-s", "session.json"]),
+            Cli {
+                api_base: None,
+                command: Command::Metrics(SessionArg {
+                    session: PathBuf::from("session.json"),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn save_accepts_output_path() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "save",
+                "-s",
+                "session.json",
+                "--output",
+                "out.json"
+            ]),
+            Cli {
+                api_base: None,
+                command: Command::Save(SaveArgs {
+                    session: SessionArg {
+                        session: PathBuf::from("session.json"),
+                    },
+                    output: Some(PathBuf::from("out.json")),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn load_accepts_input_and_optional_session() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "load",
+                "--input",
+                "snapshot.json",
+                "-s",
+                "session.json",
+            ]),
+            Cli {
+                api_base: None,
+                command: Command::Load(LoadArgs {
+                    input: PathBuf::from("snapshot.json"),
+                    session: Some(PathBuf::from("session.json")),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn scenario_run_accepts_custom_paths() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "scenario-run",
+                "--ruleset",
+                "ruleset.yaml",
+                "--scenario",
+                "scenario.yaml",
+                "-s",
+                "session.json",
+                "--ticks",
+                "10",
+            ]),
+            Cli {
+                api_base: None,
+                command: Command::ScenarioRun(ScenarioRunArgs {
+                    ruleset: Some(PathBuf::from("ruleset.yaml")),
+                    scenario: Some(PathBuf::from("scenario.yaml")),
+                    session: Some(PathBuf::from("session.json")),
+                    ticks: 10,
                 }),
             }
         );

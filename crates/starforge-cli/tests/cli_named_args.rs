@@ -263,3 +263,141 @@ fn api_mode_run_and_pause_commands_work() {
         .success()
         .stdout(predicate::str::contains("Control: paused"));
 }
+
+#[test]
+fn file_mode_metrics_save_load_and_scenario_run_work() {
+    let (_temp, session_path) = temp_session_path();
+    seed_session(&session_path);
+    let snapshot_path = session_path.with_file_name("session-snapshot.json");
+    let restored_path = session_path.with_file_name("restored-session.json");
+    let scenario_path = session_path.with_file_name("scenario-session.json");
+
+    cli_command()
+        .args(["metrics", "--session"])
+        .arg(&session_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Control: paused"))
+        .stdout(predicate::str::contains("Accepted commands:"));
+
+    cli_command()
+        .args(["save", "--session"])
+        .arg(&session_path)
+        .args(["--output"])
+        .arg(&snapshot_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Saved snapshot"));
+
+    assert!(snapshot_path.exists(), "snapshot file should exist");
+
+    cli_command()
+        .args(["load", "--input"])
+        .arg(&snapshot_path)
+        .args(["--session"])
+        .arg(&restored_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Loaded session"));
+
+    assert!(restored_path.exists(), "restored session file should exist");
+
+    cli_command()
+        .args(["scenario-run", "--session"])
+        .arg(&scenario_path)
+        .args(["--ticks", "3"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created scenario session at"))
+        .stdout(predicate::str::contains(
+            "Advanced scenario session to tick 3",
+        ));
+
+    assert!(scenario_path.exists(), "scenario session file should exist");
+}
+
+#[test]
+fn api_mode_metrics_save_and_load_work() {
+    let api_base = spawn_api_server();
+    let temp = tempdir().expect("tempdir should be created");
+    let snapshot_path = temp.path().join("remote-snapshot.json");
+
+    cli_command()
+        .args(["--api-base", &api_base, "new"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created remote session #1"));
+
+    cli_command()
+        .args([
+            "--api-base",
+            &api_base,
+            "step",
+            "--session",
+            "1",
+            "--ticks",
+            "3",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Advanced to tick 3"));
+
+    cli_command()
+        .args(["--api-base", &api_base, "metrics", "--session", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tick: 3"))
+        .stdout(predicate::str::contains("Accepted commands:"));
+
+    cli_command()
+        .args([
+            "--api-base",
+            &api_base,
+            "save",
+            "--session",
+            "1",
+            "--output",
+        ])
+        .arg(&snapshot_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Saved remote session #1"));
+
+    assert!(snapshot_path.exists(), "remote snapshot file should exist");
+
+    cli_command()
+        .args([
+            "--api-base",
+            &api_base,
+            "step",
+            "--session",
+            "1",
+            "--ticks",
+            "2",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Advanced to tick 5"));
+
+    cli_command()
+        .args(["--api-base", &api_base, "load", "--input"])
+        .arg(&snapshot_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Loaded remote session #1"))
+        .stdout(predicate::str::contains("tick 3"));
+
+    cli_command()
+        .args([
+            "--api-base",
+            &api_base,
+            "status",
+            "--session",
+            "1",
+            "--player",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Tick: 3"));
+}
