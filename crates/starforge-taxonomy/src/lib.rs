@@ -290,6 +290,7 @@ pub fn behavior_coverage_ids() -> &'static [&'static str] {
         "behavior.intel.survey_transit_marks_location_surveyed",
         "behavior.training.tier_two_progression",
         "behavior.expansion.pacification_then_claim",
+        "behavior.victory.command_collapse_defeat",
     ]
 }
 
@@ -648,6 +649,7 @@ fn implementation_catalog() -> BTreeSet<String> {
             "core.session.resolve_claim_arrival",
             "core.session.resolve_assault_arrival",
             "core.session.resolve_strategic_strike_arrival",
+            "core.session.advance_command_collapse",
         ]
         .into_iter()
         .map(str::to_owned),

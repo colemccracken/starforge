@@ -27,12 +27,12 @@ pub use state::{
 #[cfg(test)]
 mod tests {
     use crate::{
-        BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, GameConfig,
-        GameSession, HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition,
-        InfrastructureKind, InfrastructureSeed, LocationConnection, LocationKind,
-        LocationVisibility, MatchSeed, PlayerId, RelayStatus, ResourceRichness, ResourceStockpiles,
-        ScenarioConfig, SessionId, StartingLocation, StrategicPosition, TerritoryState,
-        ThreatLevel, TickId, VictoryState,
+        BuildCapacity, CommandCollapseState, CommandEnvelope, CommandKind, EnergyPotential,
+        EventKind, GameConfig, GameSession, HostileRemnantKind, HostileRemnantSeed,
+        InfrastructureCondition, InfrastructureKind, InfrastructureSeed, LocationConnection,
+        LocationKind, LocationVisibility, MatchSeed, PlayerId, RelayStatus, ResourceRichness,
+        ResourceStockpiles, ScenarioConfig, SessionId, StartingLocation, StrategicPosition,
+        TerritoryState, ThreatLevel, TickId, VictoryState,
     };
 
     fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
@@ -567,6 +567,107 @@ mod tests {
                     travel_time_ticks: 8,
                 },
             ],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn command_collapse_fixture_scenario() -> ScenarioConfig {
+        let homeworld_one = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        let mut homeworld_two = compute_homeworld(
+            PlayerId::new(2),
+            2,
+            "Selene",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        if let Some(command_nexus) = homeworld_two
+            .starting_infrastructure
+            .iter_mut()
+            .find(|seed| seed.kind == InfrastructureKind::CommandNexus)
+        {
+            command_nexus.starts_online = false;
+            command_nexus.starts_damaged = true;
+        }
+
+        let remote_colony = StartingLocation {
+            location_id: 3,
+            name: "Outland".to_owned(),
+            kind: LocationKind::BarrenWorld,
+            resource_richness: ResourceRichness::Moderate,
+            energy_potential: EnergyPotential::Moderate,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Peripheral,
+            territory: TerritoryState::Owned,
+            controller: Some(PlayerId::new(2)),
+            homeworld_of: None,
+            relay_status: RelayStatus::Connected,
+            orbital_slots: 1,
+            has_environmental_hazard: false,
+            starting_infrastructure: vec![
+                infrastructure_seed(InfrastructureKind::MiningSite),
+                infrastructure_seed(InfrastructureKind::EnergyProducer),
+                infrastructure_seed(InfrastructureKind::RelayUplink),
+            ],
+            hostile_remnant: None,
+        };
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld_one, homeworld_two, remote_colony],
+            connections: vec![
+                LocationConnection {
+                    from_location_id: 2,
+                    to_location_id: 3,
+                    travel_time_ticks: 6,
+                },
+                LocationConnection {
+                    from_location_id: 1,
+                    to_location_id: 2,
+                    travel_time_ticks: 10,
+                },
+            ],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn simultaneous_collapse_fixture_scenario() -> ScenarioConfig {
+        let mut homeworld_one = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        let mut homeworld_two = compute_homeworld(
+            PlayerId::new(2),
+            2,
+            "Selene",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        for homeworld in [&mut homeworld_one, &mut homeworld_two] {
+            if let Some(command_nexus) = homeworld
+                .starting_infrastructure
+                .iter_mut()
+                .find(|seed| seed.kind == InfrastructureKind::CommandNexus)
+            {
+                command_nexus.starts_online = false;
+                command_nexus.starts_damaged = true;
+            }
+        }
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld_one, homeworld_two],
+            connections: vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 10,
+            }],
             ..ScenarioConfig::test_fixture()
         }
     }
@@ -2466,6 +2567,201 @@ mod tests {
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
             EventKind::VictoryDeclared { winner, .. } if *winner == PlayerId::new(1)
+        )));
+    }
+
+    #[test]
+    fn command_collapse_starts_and_defeats_after_countdown() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            command_collapse_fixture_scenario(),
+        );
+
+        session.advance_tick();
+
+        let collapse_view = session
+            .player_view(PlayerId::new(2))
+            .expect("player view should load");
+        assert!(matches!(
+            collapse_view.collapse,
+            CommandCollapseState::Collapsing { ticks_remaining: 8 }
+        ));
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::CommandCollapseStarted {
+                player_id,
+                ticks_remaining,
+            } if *player_id == PlayerId::new(2) && *ticks_remaining == 8
+        )));
+
+        session.advance_ticks(8);
+
+        let defeated_view = session
+            .player_view(PlayerId::new(2))
+            .expect("player view should load");
+        assert_eq!(defeated_view.collapse, CommandCollapseState::Defeated);
+        assert_eq!(
+            session.state().victory,
+            VictoryState::Won {
+                winner: PlayerId::new(1),
+            }
+        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::PlayerDefeated { player_id, reason }
+                if *player_id == PlayerId::new(2) && reason == "command_collapse"
+        )));
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::VictoryDeclared { winner, reason }
+                if *winner == PlayerId::new(1) && reason == "command_collapse"
+        )));
+        assert!(session.state().locations.iter().all(|location| {
+            location.controller != Some(PlayerId::new(2))
+                || location.territory == TerritoryState::Destroyed
+        }));
+    }
+
+    #[test]
+    fn repairing_offline_nexus_recovers_from_collapse() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            command_collapse_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(2),
+                CommandKind::QueueInfrastructureRepair {
+                    location_id: 2,
+                    infrastructure_kind: InfrastructureKind::CommandNexus,
+                },
+            )
+            .expect("repair should queue");
+
+        session.advance_ticks(4);
+
+        let player_view = session
+            .player_view(PlayerId::new(2))
+            .expect("player view should load");
+        assert_eq!(player_view.collapse, CommandCollapseState::Stable);
+        assert_eq!(session.state().victory, VictoryState::Ongoing);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::CommandCollapseRecovered { player_id } if *player_id == PlayerId::new(2)
+        )));
+    }
+
+    #[test]
+    fn simultaneous_collapse_expiry_resolves_to_single_winner() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            simultaneous_collapse_fixture_scenario(),
+        );
+
+        session.advance_ticks(9);
+
+        assert_eq!(
+            session.state().victory,
+            VictoryState::Won {
+                winner: PlayerId::new(2),
+            }
+        );
+        let player_one = session
+            .player_view(PlayerId::new(1))
+            .expect("player one view should load");
+        let player_two = session
+            .player_view(PlayerId::new(2))
+            .expect("player two view should load");
+        assert_eq!(player_one.collapse, CommandCollapseState::Defeated);
+        assert!(matches!(
+            player_two.collapse,
+            CommandCollapseState::Collapsing { .. }
+        ));
+        assert!(
+            session
+                .event_log()
+                .iter()
+                .filter(|event| matches!(&event.kind, EventKind::PlayerDefeated { .. }))
+                .count()
+                == 1
+        );
+    }
+
+    #[test]
+    fn ascension_sequence_is_interrupted_by_relay_cut() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            ascension_fixture_scenario(),
+        );
+
+        for (target_tier, reserved_for_training, duration) in [(2, 20, 8), (3, 35, 12), (4, 50, 16)]
+        {
+            session
+                .issue_command_now(
+                    PlayerId::new(1),
+                    CommandKind::SetThroughputBudget {
+                        reserved_for_model_upkeep: 0,
+                        reserved_for_training,
+                        reserved_for_agents: 0,
+                    },
+                )
+                .expect("budget update should be accepted");
+            session
+                .issue_command_now(
+                    PlayerId::new(1),
+                    CommandKind::StartTrainingRun { target_tier },
+                )
+                .expect("training run should be accepted");
+            session.advance_ticks(duration);
+        }
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::SetThroughputBudget {
+                    reserved_for_model_upkeep: 0,
+                    reserved_for_training: 70,
+                    reserved_for_agents: 0,
+                },
+            )
+            .expect("tier five budget should be accepted");
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::StartTrainingRun { target_tier: 5 },
+            )
+            .expect("tier five training should be accepted");
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::SetRelayStatus {
+                    location_id: 1,
+                    relay_status: RelayStatus::Disconnected,
+                },
+            )
+            .expect("relay cut should be accepted");
+
+        session.advance_tick();
+
+        let player = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should load");
+        assert!(player.training.is_none());
+        assert_eq!(session.state().victory, VictoryState::Ongoing);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::AscensionInterrupted {
+                player_id,
+                location_id,
+                reason,
+            } if *player_id == PlayerId::new(1)
+                && *location_id == 1
+                && reason == "site_unavailable"
         )));
     }
 

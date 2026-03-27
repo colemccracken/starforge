@@ -215,6 +215,10 @@ impl GameSession {
         for transit in arrived_transits {
             self.handle_arrived_transit(transit);
         }
+
+        for event in self.advance_command_collapse() {
+            self.event_log.push(event);
+        }
     }
 
     pub fn accept_command(&mut self, command: CommandEnvelope) -> Result<(), ValidationError> {
@@ -247,6 +251,26 @@ impl GameSession {
                 code: "game_already_over".to_owned(),
                 message: "the session already has a winner and cannot accept more commands"
                     .to_owned(),
+            };
+            self.event_log.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: Some(command.player_id),
+                kind: EventKind::CommandRejected {
+                    command: command.command,
+                    error: error.clone(),
+                },
+            });
+
+            return Err(error);
+        }
+
+        if matches!(
+            self.player_state(command.player_id)?.collapse,
+            crate::CommandCollapseState::Defeated
+        ) {
+            let error = ValidationError {
+                code: "player_defeated".to_owned(),
+                message: "defeated players can no longer issue commands".to_owned(),
             };
             self.event_log.push(EventRecord {
                 tick_id: self.state.tick_id,
@@ -372,6 +396,7 @@ impl GameSession {
             economy: player.economy.clone(),
             throughput: player.throughput.clone(),
             training: player.training.clone(),
+            collapse: player.collapse.clone(),
             visibility: player.visibility.clone(),
             locations,
             transits,
@@ -1059,6 +1084,15 @@ impl GameSession {
             });
         }
 
+        let ascension_site_location_id = if target_tier >= 5 {
+            Some(self.select_ascension_site(player_id).ok_or(ValidationError {
+                code: "missing_ascension_site".to_owned(),
+                message: "tier 5 ascension requires a connected owned world with an active command nexus and datacenter"
+                    .to_owned(),
+            })?)
+        } else {
+            None
+        };
         let required_ticks = training_duration_ticks(target_tier);
         let player = self.player_state_mut(player_id)?;
         player.training = Some(crate::TrainingRunState {
@@ -1066,13 +1100,24 @@ impl GameSession {
             progress_ticks: 0,
             required_ticks,
             required_training_throughput,
+            ascension_site_location_id,
         });
 
-        Ok(vec![EventKind::TrainingRunStarted {
+        let mut events = vec![EventKind::TrainingRunStarted {
             target_tier,
             required_training_throughput,
             required_ticks,
-        }])
+        }];
+        if let Some(location_id) = ascension_site_location_id {
+            events.push(EventKind::AscensionStarted {
+                player_id,
+                location_id,
+                required_training_throughput,
+                required_ticks,
+            });
+        }
+
+        Ok(events)
     }
 
     fn handle_arrived_transit(&mut self, transit: TransitState) {
@@ -1601,6 +1646,31 @@ impl GameSession {
         }
     }
 
+    fn select_ascension_site(&self, player_id: PlayerId) -> Option<u32> {
+        self.state
+            .locations
+            .iter()
+            .find(|location| self.is_valid_ascension_site(player_id, location.location_id))
+            .map(|location| location.location_id)
+    }
+
+    fn is_valid_ascension_site(&self, player_id: PlayerId, location_id: u32) -> bool {
+        self.state.locations.iter().any(|location| {
+            location.location_id == location_id
+                && location.controller == Some(player_id)
+                && location.territory == TerritoryState::Owned
+                && location.economy.connected_to_empire
+                && location.infrastructure.iter().any(|infrastructure| {
+                    infrastructure.kind == InfrastructureKind::CommandNexus
+                        && infrastructure.condition != InfrastructureCondition::Offline
+                })
+                && location.infrastructure.iter().any(|infrastructure| {
+                    infrastructure.kind == InfrastructureKind::Datacenter
+                        && infrastructure.condition != InfrastructureCondition::Offline
+                })
+        })
+    }
+
     fn advance_training_runs(&mut self) -> Vec<EventRecord> {
         if self.state.victory != crate::VictoryState::Ongoing {
             return Vec::new();
@@ -1626,27 +1696,81 @@ impl GameSession {
             .collect();
 
         let mut events = Vec::new();
-        for player in &mut self.state.players {
-            let Some(training) = player.training.as_mut() else {
-                continue;
-            };
-
+        for index in 0..self.state.players.len() {
             if self.state.victory != crate::VictoryState::Ongoing {
                 break;
             }
 
+            let player_id = self.state.players[index].player_id;
+            let Some(training_snapshot) = self.state.players[index].training.clone() else {
+                continue;
+            };
+
             let owned_count = owned_counts
                 .iter()
-                .find(|(player_id, _)| *player_id == player.player_id)
+                .find(|(candidate_id, _)| *candidate_id == player_id)
                 .map(|(_, count)| *count)
                 .unwrap_or(0);
 
-            if player.throughput.reserved_for_training < training.required_training_throughput
-                || owned_count < minimum_worlds_for_tier(training.target_tier)
+            let insufficient_training_budget =
+                self.state.players[index].throughput.reserved_for_training
+                    < training_snapshot.required_training_throughput;
+            let insufficient_available_throughput = self.state.players[index].throughput.available
+                < training_snapshot.required_training_throughput;
+            let insufficient_worlds =
+                owned_count < minimum_worlds_for_tier(training_snapshot.target_tier);
+
+            if training_snapshot.target_tier >= 5 {
+                let Some(location_id) = training_snapshot.ascension_site_location_id else {
+                    self.state.players[index].training = None;
+                    events.push(EventRecord {
+                        tick_id: self.state.tick_id,
+                        player_id: Some(player_id),
+                        kind: EventKind::AscensionInterrupted {
+                            player_id,
+                            location_id: 0,
+                            reason: "missing_site".to_owned(),
+                        },
+                    });
+                    continue;
+                };
+
+                if insufficient_training_budget
+                    || insufficient_available_throughput
+                    || insufficient_worlds
+                    || !self.is_valid_ascension_site(player_id, location_id)
+                {
+                    let reason =
+                        if insufficient_training_budget || insufficient_available_throughput {
+                            "throughput_below_threshold"
+                        } else if insufficient_worlds {
+                            "insufficient_owned_worlds"
+                        } else {
+                            "site_unavailable"
+                        };
+                    self.state.players[index].training = None;
+                    events.push(EventRecord {
+                        tick_id: self.state.tick_id,
+                        player_id: Some(player_id),
+                        kind: EventKind::AscensionInterrupted {
+                            player_id,
+                            location_id,
+                            reason: reason.to_owned(),
+                        },
+                    });
+                    continue;
+                }
+            } else if insufficient_training_budget
+                || insufficient_available_throughput
+                || insufficient_worlds
             {
                 continue;
             }
 
+            let player = &mut self.state.players[index];
+            let Some(training) = player.training.as_mut() else {
+                continue;
+            };
             training.progress_ticks = training.progress_ticks.saturating_add(1);
             if training.progress_ticks < training.required_ticks {
                 continue;
@@ -1657,19 +1781,17 @@ impl GameSession {
             player.training = None;
             events.push(EventRecord {
                 tick_id: self.state.tick_id,
-                player_id: Some(player.player_id),
+                player_id: Some(player_id),
                 kind: EventKind::TrainingRunCompleted { achieved_tier },
             });
 
             if achieved_tier >= 5 {
-                self.state.victory = crate::VictoryState::Won {
-                    winner: player.player_id,
-                };
+                self.state.victory = crate::VictoryState::Won { winner: player_id };
                 events.push(EventRecord {
                     tick_id: self.state.tick_id,
-                    player_id: Some(player.player_id),
+                    player_id: Some(player_id),
                     kind: EventKind::VictoryDeclared {
-                        winner: player.player_id,
+                        winner: player_id,
                         reason: "superintelligence_ascension".to_owned(),
                     },
                 });
@@ -1677,6 +1799,219 @@ impl GameSession {
         }
 
         events
+    }
+
+    fn advance_command_collapse(&mut self) -> Vec<EventRecord> {
+        if self.state.victory != crate::VictoryState::Ongoing {
+            return Vec::new();
+        }
+
+        let active_nexus_by_player: Vec<(PlayerId, bool)> = self
+            .state
+            .players
+            .iter()
+            .map(|player| {
+                (
+                    player.player_id,
+                    self.player_has_active_command_nexus(player.player_id),
+                )
+            })
+            .collect();
+
+        let mut events = Vec::new();
+        let mut defeated_players = Vec::new();
+        let mut collapse_winner = None;
+
+        for index in 0..self.state.players.len() {
+            let player_id = self.state.players[index].player_id;
+            if !self.player_has_owned_presence(player_id) {
+                continue;
+            }
+            let has_active_nexus = active_nexus_by_player
+                .iter()
+                .find(|(candidate_id, _)| *candidate_id == player_id)
+                .map(|(_, has_active_nexus)| *has_active_nexus)
+                .unwrap_or(false);
+
+            match self.state.players[index].collapse.clone() {
+                crate::CommandCollapseState::Stable => {
+                    if !has_active_nexus {
+                        self.state.players[index].collapse =
+                            crate::CommandCollapseState::Collapsing {
+                                ticks_remaining: collapse_countdown_ticks(),
+                            };
+                        events.push(EventRecord {
+                            tick_id: self.state.tick_id,
+                            player_id: Some(player_id),
+                            kind: EventKind::CommandCollapseStarted {
+                                player_id,
+                                ticks_remaining: collapse_countdown_ticks(),
+                            },
+                        });
+                    }
+                }
+                crate::CommandCollapseState::Collapsing { ticks_remaining } => {
+                    if has_active_nexus {
+                        self.state.players[index].collapse = crate::CommandCollapseState::Stable;
+                        events.push(EventRecord {
+                            tick_id: self.state.tick_id,
+                            player_id: Some(player_id),
+                            kind: EventKind::CommandCollapseRecovered { player_id },
+                        });
+                    } else if ticks_remaining <= 1 {
+                        self.state.players[index].collapse = crate::CommandCollapseState::Defeated;
+                        self.state.players[index].training = None;
+                        self.state.players[index].agents.clear();
+                        self.state.players[index].throughput.reserved_for_agents = 0;
+                        self.state.players[index].throughput.reserved_for_training = 0;
+                        defeated_players.push(player_id);
+                        events.push(EventRecord {
+                            tick_id: self.state.tick_id,
+                            player_id: Some(player_id),
+                            kind: EventKind::PlayerDefeated {
+                                player_id,
+                                reason: "command_collapse".to_owned(),
+                            },
+                        });
+                        if let Some(winner) = self.remaining_non_defeated_player() {
+                            collapse_winner = Some(winner);
+                            break;
+                        }
+                    } else {
+                        self.state.players[index].collapse =
+                            crate::CommandCollapseState::Collapsing {
+                                ticks_remaining: ticks_remaining - 1,
+                            };
+                    }
+                }
+                crate::CommandCollapseState::Defeated => {}
+            }
+        }
+
+        if !defeated_players.is_empty() {
+            for player_id in defeated_players {
+                self.neutralize_defeated_player_assets(player_id);
+            }
+
+            self.state.recompute_economy();
+            for kind in self.economy_updated_events() {
+                events.push(EventRecord {
+                    tick_id: self.state.tick_id,
+                    player_id: None,
+                    kind,
+                });
+            }
+        }
+
+        if let Some(winner) = collapse_winner.or_else(|| {
+            if self
+                .state
+                .players
+                .iter()
+                .any(|player| matches!(player.collapse, crate::CommandCollapseState::Defeated))
+            {
+                self.remaining_non_defeated_player()
+            } else {
+                None
+            }
+        }) {
+            self.state.victory = crate::VictoryState::Won { winner };
+            events.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: Some(winner),
+                kind: EventKind::VictoryDeclared {
+                    winner,
+                    reason: "command_collapse".to_owned(),
+                },
+            });
+        }
+
+        events
+    }
+
+    fn player_has_active_command_nexus(&self, player_id: PlayerId) -> bool {
+        self.state.locations.iter().any(|location| {
+            location.controller == Some(player_id)
+                && location.territory == TerritoryState::Owned
+                && location.infrastructure.iter().any(|infrastructure| {
+                    infrastructure.kind == InfrastructureKind::CommandNexus
+                        && infrastructure.condition != InfrastructureCondition::Offline
+                })
+        })
+    }
+
+    fn player_has_owned_presence(&self, player_id: PlayerId) -> bool {
+        self.state.locations.iter().any(|location| {
+            location.controller == Some(player_id)
+                && location.territory != TerritoryState::Destroyed
+        })
+    }
+
+    fn neutralize_defeated_player_assets(&mut self, player_id: PlayerId) {
+        self.pending_commands
+            .retain(|command| command.player_id != player_id);
+        self.state
+            .transits
+            .retain(|transit| transit.player_id != player_id);
+
+        for location in &mut self.state.locations {
+            location
+                .contesting_players
+                .retain(|candidate_id| *candidate_id != player_id);
+            if location.takeover_attacker == Some(player_id) {
+                location.takeover_attacker = None;
+                location.takeover_ticks_remaining = 0;
+            }
+
+            if location.controller == Some(player_id)
+                && location.territory != TerritoryState::Destroyed
+            {
+                location.territory = TerritoryState::Neutral;
+                location.controller = None;
+                location.relay_status = RelayStatus::Disconnected;
+                location.contesting_players.clear();
+                location.takeover_attacker = None;
+                location.takeover_ticks_remaining = 0;
+                location.infrastructure_projects.clear();
+                location.pacification_ticks_remaining = 0;
+                for infrastructure in &mut location.infrastructure {
+                    if infrastructure.condition != InfrastructureCondition::Offline {
+                        infrastructure.condition = InfrastructureCondition::Degraded;
+                        infrastructure.wear = crate::state::initial_wear_for_condition(
+                            &InfrastructureCondition::Degraded,
+                        );
+                    }
+                }
+            }
+
+            if location.territory == TerritoryState::Contested
+                && location.takeover_attacker.is_none()
+            {
+                location.territory = if location.controller.is_some() {
+                    TerritoryState::Owned
+                } else {
+                    TerritoryState::Neutral
+                };
+            }
+        }
+    }
+
+    fn remaining_non_defeated_player(&self) -> Option<PlayerId> {
+        let remaining_players: Vec<PlayerId> = self
+            .state
+            .players
+            .iter()
+            .filter(|player| {
+                !matches!(player.collapse, crate::CommandCollapseState::Defeated)
+                    && self.player_has_owned_presence(player.player_id)
+            })
+            .map(|player| player.player_id)
+            .collect();
+
+        match remaining_players.as_slice() {
+            [winner] => Some(*winner),
+            _ => None,
+        }
     }
 
     fn advance_takeover_resolution(&mut self) -> Vec<EventRecord> {
@@ -1936,6 +2271,11 @@ impl GameSession {
                     || *defender_id == player_id
                     || self.location_is_observed_by_player(player_id, *location_id)
             }
+            EventKind::AscensionStarted { .. }
+            | EventKind::AscensionInterrupted { .. }
+            | EventKind::CommandCollapseStarted { .. }
+            | EventKind::CommandCollapseRecovered { .. }
+            | EventKind::PlayerDefeated { .. } => true,
             EventKind::VictoryDeclared { .. } => true,
         }
     }
@@ -2351,6 +2691,10 @@ const fn takeover_duration_ticks() -> u32 {
 
 const fn pacification_duration_ticks() -> u32 {
     12
+}
+
+const fn collapse_countdown_ticks() -> u64 {
+    8
 }
 
 fn strategic_strike_cost() -> ResourceStockpiles {

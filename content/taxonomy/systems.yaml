@@ -121,7 +121,7 @@ entries:
     title: Training Runs
     kind: concept
     parent_id: ai
-    summary: Reserved throughput can be committed to deterministic tier progression with world-count and site requirements.
+    summary: Reserved throughput can be committed to deterministic tier progression with world-count and site requirements, and tier-five ascension now interrupts if throughput or site validity is lost.
     status: implemented
     reference_sections:
       - Model Tiers
@@ -235,7 +235,11 @@ entries:
     title: Command Collapse
     kind: concept
     parent_id: victory
-    summary: Command collapse exists as a runtime state enum but has no gameplay rules attached yet.
-    status: draft
+    summary: Losing all active command nexus coverage now starts a deterministic collapse countdown that can recover through repairs or end in defeat and a single-winner command-collapse victory.
+    status: implemented
     reference_sections:
       - Command Collapse Rule
+    implementation_keys:
+      - core.session.advance_command_collapse
+    behavior_ids:
+      - behavior.victory.command_collapse_defeat

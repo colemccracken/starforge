@@ -6,8 +6,8 @@ use std::{
 
 use clap::Parser;
 use starforge_core::{
-    CommandKind, GameSession, InfrastructureCondition, LocationView, PlayerId, SessionId, TickId,
-    TransitKind, VictoryState,
+    CommandCollapseState, CommandKind, GameSession, InfrastructureCondition, LocationView,
+    PlayerId, SessionId, TickId, TransitKind, VictoryState,
 };
 use starforge_scenarios::starter_skirmish_harness;
 
@@ -199,6 +199,7 @@ fn cmd_status(session_path: &Path, player_id: PlayerId) -> Result<(), DynError> 
     println!("Victory: {}", render_victory(&session.state().victory));
     println!("Player: P{}", player_id.0);
     println!("Model tier: {}", view.model_tier);
+    println!("Collapse: {}", render_collapse(&view.collapse));
     println!("Owned worlds: {}", owned_count);
     println!(
         "Throughput: available={} upkeep={} training={} agents={}",
@@ -219,13 +220,20 @@ fn cmd_status(session_path: &Path, player_id: PlayerId) -> Result<(), DynError> 
     );
 
     match &view.training {
-        Some(training) => println!(
-            "Training: tier {} progress {}/{} requiring {} training throughput",
-            training.target_tier,
-            training.progress_ticks,
-            training.required_ticks,
-            training.required_training_throughput
-        ),
+        Some(training) => {
+            let site_suffix = training
+                .ascension_site_location_id
+                .map(|location_id| format!(" site=#{location_id}"))
+                .unwrap_or_default();
+            println!(
+                "Training: tier {} progress {}/{} requiring {} training throughput{}",
+                training.target_tier,
+                training.progress_ticks,
+                training.required_ticks,
+                training.required_training_throughput,
+                site_suffix
+            );
+        }
         None => println!("Training: none"),
     }
 
@@ -498,6 +506,16 @@ fn render_victory(victory: &VictoryState) -> String {
     }
 }
 
+fn render_collapse(collapse: &CommandCollapseState) -> String {
+    match collapse {
+        CommandCollapseState::Stable => "stable".to_owned(),
+        CommandCollapseState::Collapsing { ticks_remaining } => {
+            format!("collapsing ({ticks_remaining} ticks remaining)")
+        }
+        CommandCollapseState::Defeated => "defeated".to_owned(),
+    }
+}
+
 fn render_transit_kind(kind: &TransitKind) -> &'static str {
     match kind {
         TransitKind::Survey => "survey",
@@ -699,6 +717,36 @@ fn render_event(event: &starforge_core::EventKind) -> String {
         ),
         starforge_core::EventKind::TrainingRunCompleted { achieved_tier } => {
             format!("training run completed; achieved tier {}", achieved_tier)
+        }
+        starforge_core::EventKind::AscensionStarted {
+            player_id,
+            location_id,
+            required_training_throughput,
+            required_ticks,
+        } => format!(
+            "ascension started for P{} at #{} requiring {} throughput for {} ticks",
+            player_id.0, location_id, required_training_throughput, required_ticks
+        ),
+        starforge_core::EventKind::AscensionInterrupted {
+            player_id,
+            location_id,
+            reason,
+        } => format!(
+            "ascension interrupted for P{} at #{} ({})",
+            player_id.0, location_id, reason
+        ),
+        starforge_core::EventKind::CommandCollapseStarted {
+            player_id,
+            ticks_remaining,
+        } => format!(
+            "command collapse started for P{} with {} ticks remaining",
+            player_id.0, ticks_remaining
+        ),
+        starforge_core::EventKind::CommandCollapseRecovered { player_id } => {
+            format!("command collapse recovered for P{}", player_id.0)
+        }
+        starforge_core::EventKind::PlayerDefeated { player_id, reason } => {
+            format!("player P{} defeated ({})", player_id.0, reason)
         }
         starforge_core::EventKind::VictoryDeclared { winner, reason } => {
             format!("victory declared for P{} ({})", winner.0, reason)

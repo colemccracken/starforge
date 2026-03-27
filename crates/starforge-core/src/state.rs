@@ -406,6 +406,7 @@ pub struct PlayerStateView {
     pub economy: PlayerEconomyState,
     pub throughput: ThroughputBudget,
     pub training: Option<TrainingRunState>,
+    pub collapse: CommandCollapseState,
     pub visibility: VisibilityState,
     pub locations: Vec<LocationView>,
     pub transits: Vec<TransitView>,
@@ -478,6 +479,8 @@ pub struct TrainingRunState {
     pub progress_ticks: u32,
     pub required_ticks: u32,
     pub required_training_throughput: u32,
+    #[serde(default)]
+    pub ascension_site_location_id: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -759,6 +762,7 @@ pub enum CommandCollapseState {
     Collapsing {
         ticks_remaining: u64,
     },
+    Defeated,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

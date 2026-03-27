@@ -220,6 +220,46 @@ entries:
     status: implemented
     implementation_keys:
       - event_kind.training_run_completed
+  - id: events.ascension_started
+    title: AscensionStarted
+    kind: event
+    parent_id: events
+    summary: Emits when a tier-five ascension sequence starts at a specific world and reserves its required throughput.
+    status: implemented
+    implementation_keys:
+      - event_kind.ascension_started
+  - id: events.ascension_interrupted
+    title: AscensionInterrupted
+    kind: event
+    parent_id: events
+    summary: Emits when an active ascension sequence is cancelled by site loss, relay disruption, or throughput failure.
+    status: implemented
+    implementation_keys:
+      - event_kind.ascension_interrupted
+  - id: events.command_collapse_started
+    title: CommandCollapseStarted
+    kind: event
+    parent_id: events
+    summary: Emits when a player loses all active command nexus coverage and enters the collapse countdown.
+    status: implemented
+    implementation_keys:
+      - event_kind.command_collapse_started
+  - id: events.command_collapse_recovered
+    title: CommandCollapseRecovered
+    kind: event
+    parent_id: events
+    summary: Emits when a collapsing player restores an active command nexus before defeat.
+    status: implemented
+    implementation_keys:
+      - event_kind.command_collapse_recovered
+  - id: events.player_defeated
+    title: PlayerDefeated
+    kind: event
+    parent_id: events
+    summary: Emits when a player is eliminated by command collapse and their remaining assets are neutralized.
+    status: implemented
+    implementation_keys:
+      - event_kind.player_defeated
   - id: events.victory_declared
     title: VictoryDeclared
     kind: event

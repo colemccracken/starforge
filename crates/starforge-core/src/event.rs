@@ -130,6 +130,17 @@ pub enum EventKind {
         location_id: u32,
         player_id: PlayerId,
     },
+    AscensionStarted {
+        player_id: PlayerId,
+        location_id: u32,
+        required_training_throughput: u32,
+        required_ticks: u32,
+    },
+    AscensionInterrupted {
+        player_id: PlayerId,
+        location_id: u32,
+        reason: String,
+    },
     TrainingRunStarted {
         target_tier: u8,
         required_training_throughput: u32,
@@ -137,6 +148,17 @@ pub enum EventKind {
     },
     TrainingRunCompleted {
         achieved_tier: u8,
+    },
+    CommandCollapseStarted {
+        player_id: PlayerId,
+        ticks_remaining: u64,
+    },
+    CommandCollapseRecovered {
+        player_id: PlayerId,
+    },
+    PlayerDefeated {
+        player_id: PlayerId,
+        reason: String,
     },
     VictoryDeclared {
         winner: PlayerId,
@@ -185,8 +207,13 @@ pub enum EventDiscriminant {
     StrategicStrikeIntercepted,
     LocationDestroyed,
     PacificationCompleted,
+    AscensionStarted,
+    AscensionInterrupted,
     TrainingRunStarted,
     TrainingRunCompleted,
+    CommandCollapseStarted,
+    CommandCollapseRecovered,
+    PlayerDefeated,
     VictoryDeclared,
 }
 
@@ -231,8 +258,13 @@ impl From<&EventKind> for EventDiscriminant {
             EventKind::StrategicStrikeIntercepted { .. } => Self::StrategicStrikeIntercepted,
             EventKind::LocationDestroyed { .. } => Self::LocationDestroyed,
             EventKind::PacificationCompleted { .. } => Self::PacificationCompleted,
+            EventKind::AscensionStarted { .. } => Self::AscensionStarted,
+            EventKind::AscensionInterrupted { .. } => Self::AscensionInterrupted,
             EventKind::TrainingRunStarted { .. } => Self::TrainingRunStarted,
             EventKind::TrainingRunCompleted { .. } => Self::TrainingRunCompleted,
+            EventKind::CommandCollapseStarted { .. } => Self::CommandCollapseStarted,
+            EventKind::CommandCollapseRecovered { .. } => Self::CommandCollapseRecovered,
+            EventKind::PlayerDefeated { .. } => Self::PlayerDefeated,
             EventKind::VictoryDeclared { .. } => Self::VictoryDeclared,
         }
     }
