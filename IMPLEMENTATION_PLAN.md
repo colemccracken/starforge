@@ -359,7 +359,7 @@ Implement travel, scouting, fog of war, and player-scoped visibility projections
 
 - Centralize visibility filtering instead of scattering it across systems.
 - Lock the contested-world projection schema before the API contract is declared stable.
-- Current state: survey transit, stale or observed visibility, player-scoped event feeds, pacification expeditions, claim expeditions, and assault-driven contested worlds are implemented; the remaining gap is refining contested-world field visibility to the exact major-actions-only projection described in the reference.
+- Current state: survey transit, stale or observed visibility, player-scoped event feeds, pacification expeditions, claim expeditions, and assault-driven contested worlds are implemented; contested attackers now receive a restricted read model that hides queues, stockpiles, and precise economy output, but the remaining gap is refining the full major-actions-only projection described in the reference.
 
 ### 6. Military and Victory
 

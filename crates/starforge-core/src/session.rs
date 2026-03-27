@@ -1965,6 +1965,8 @@ fn project_location_for_player(
     }
 
     if is_observed {
+        let restricted_contested_view = location.territory == TerritoryState::Contested
+            && location.controller != Some(player_id);
         return LocationView {
             location_id: location.location_id,
             name: location.name.clone(),
@@ -1972,17 +1974,37 @@ fn project_location_for_player(
             territory: location.territory.clone(),
             controller: location.controller,
             contesting_players: Some(location.contesting_players.clone()),
-            pacification_ticks_remaining: Some(location.pacification_ticks_remaining),
+            pacification_ticks_remaining: if restricted_contested_view {
+                None
+            } else {
+                Some(location.pacification_ticks_remaining)
+            },
             kind: Some(location.kind.clone()),
             resource_richness: Some(location.resource_richness.clone()),
             energy_potential: Some(location.energy_potential.clone()),
             build_capacity: Some(location.build_capacity.clone()),
-            relay_status: Some(location.relay_status.clone()),
+            relay_status: if restricted_contested_view {
+                None
+            } else {
+                Some(location.relay_status.clone())
+            },
             orbital_slots: Some(location.orbital_slots),
             has_environmental_hazard: Some(location.has_environmental_hazard),
-            infrastructure: Some(location.infrastructure.clone()),
-            infrastructure_projects: Some(location.infrastructure_projects.clone()),
-            economy: Some(location.economy.clone()),
+            infrastructure: Some(if restricted_contested_view {
+                sanitize_contested_infrastructure(&location.infrastructure)
+            } else {
+                location.infrastructure.clone()
+            }),
+            infrastructure_projects: if restricted_contested_view {
+                None
+            } else {
+                Some(location.infrastructure_projects.clone())
+            },
+            economy: if restricted_contested_view {
+                None
+            } else {
+                Some(location.economy.clone())
+            },
             stockpiles: None,
             hostile_remnant_present: Some(location.hostile_remnant.is_some()),
         };
@@ -2043,6 +2065,19 @@ fn project_transit_for_player(transit: &TransitState) -> TransitView {
         eta_tick: transit.eta_tick,
         kind: transit.kind.clone(),
     }
+}
+
+fn sanitize_contested_infrastructure(
+    infrastructure: &[crate::InfrastructureState],
+) -> Vec<crate::InfrastructureState> {
+    infrastructure
+        .iter()
+        .cloned()
+        .map(|mut infrastructure| {
+            infrastructure.wear = 0;
+            infrastructure
+        })
+        .collect()
 }
 
 fn ensure_colony_infrastructure(location: &mut LocationState) {

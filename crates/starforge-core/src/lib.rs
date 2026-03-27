@@ -2011,8 +2011,15 @@ mod tests {
             attacker_location.contesting_players,
             Some(vec![PlayerId::new(1)])
         );
+        assert_eq!(attacker_location.relay_status, None);
+        assert_eq!(attacker_location.economy, None);
+        assert_eq!(attacker_location.infrastructure_projects, None);
+        assert_eq!(attacker_location.stockpiles, None);
         assert_eq!(defender_location.visibility, LocationVisibility::Observed);
         assert_eq!(defender_location.territory, TerritoryState::Contested);
+        assert!(defender_location.relay_status.is_some());
+        assert!(defender_location.economy.is_some());
+        assert!(defender_location.infrastructure_projects.is_some());
 
         let defender_events = session
             .player_events(PlayerId::new(2), TickId::default())
