@@ -172,6 +172,22 @@ entries:
     status: implemented
     implementation_keys:
       - event_kind.location_contested
+  - id: events.location_captured
+    title: LocationCaptured
+    kind: event
+    parent_id: events
+    summary: Emits when a contested world resolves to an attacking owner and enters pacification.
+    status: implemented
+    implementation_keys:
+      - event_kind.location_captured
+  - id: events.pacification_completed
+    title: PacificationCompleted
+    kind: event
+    parent_id: events
+    summary: Emits when a captured world finishes pacification and returns to full productivity.
+    status: implemented
+    implementation_keys:
+      - event_kind.pacification_completed
   - id: events.training_run_started
     title: TrainingRunStarted
     kind: event

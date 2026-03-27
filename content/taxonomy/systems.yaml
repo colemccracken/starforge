@@ -199,7 +199,7 @@ entries:
     title: Conquest Rules
     kind: concept
     parent_id: conflict
-    summary: Military conquest is beginning with assault transits that create contested enemy worlds, but takeover and destruction outcomes remain future work.
+    summary: Military conquest now supports assault-driven contested worlds, deterministic takeover, and pacification, while destruction outcomes remain future work.
     status: draft
     reference_sections:
       - Conquest Rules
@@ -210,6 +210,8 @@ entries:
     related_ids:
       - commands.dispatch_assault_transit
       - events.location_contested
+      - events.location_captured
+      - events.pacification_completed
 
   - id: victory
     title: Victory And Defeat

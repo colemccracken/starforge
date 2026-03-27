@@ -296,6 +296,12 @@ pub struct LocationState {
     pub hostile_remnant: Option<HostileRemnantSeed>,
     #[serde(default)]
     pub contesting_players: Vec<PlayerId>,
+    #[serde(default)]
+    pub takeover_attacker: Option<PlayerId>,
+    #[serde(default)]
+    pub takeover_ticks_remaining: u32,
+    #[serde(default)]
+    pub pacification_ticks_remaining: u32,
 }
 
 impl From<StartingLocation> for LocationState {
@@ -327,6 +333,9 @@ impl From<StartingLocation> for LocationState {
             stockpiles,
             hostile_remnant: location.hostile_remnant,
             contesting_players: Vec::new(),
+            takeover_attacker: None,
+            takeover_ticks_remaining: 0,
+            pacification_ticks_remaining: 0,
         }
     }
 }
@@ -410,6 +419,7 @@ pub struct LocationView {
     pub territory: TerritoryState,
     pub controller: Option<PlayerId>,
     pub contesting_players: Option<Vec<PlayerId>>,
+    pub pacification_ticks_remaining: Option<u32>,
     pub kind: Option<LocationKind>,
     pub resource_richness: Option<ResourceRichness>,
     pub energy_potential: Option<EnergyPotential>,
@@ -764,12 +774,15 @@ fn compute_location_economy(location: &LocationState) -> LocationEconomyState {
         return LocationEconomyState::default();
     }
 
+    let pacification_modifier_percent = pacification_modifier_percent(location);
     let generated_energy: u32 = location
         .infrastructure
         .iter()
         .filter(|infrastructure| infrastructure.kind == InfrastructureKind::EnergyProducer)
         .map(|infrastructure| energy_output(location.energy_potential.clone(), infrastructure))
-        .sum();
+        .sum::<u32>()
+        .saturating_mul(pacification_modifier_percent)
+        .saturating_div(100);
     let datacenter_capacity: u32 = location
         .infrastructure
         .iter()
@@ -777,7 +790,9 @@ fn compute_location_economy(location: &LocationState) -> LocationEconomyState {
         .map(|infrastructure| {
             datacenter_capacity_output(location.build_capacity.clone(), infrastructure)
         })
-        .sum();
+        .sum::<u32>()
+        .saturating_mul(pacification_modifier_percent)
+        .saturating_div(100);
     let local_usable_throughput = generated_energy.min(datacenter_capacity);
     let extraction_output = resource_extraction_output(location);
     let connected_to_empire = location.relay_status == RelayStatus::Connected
@@ -898,7 +913,29 @@ fn resource_extraction_output(location: &LocationState) -> ResourceStockpiles {
         output.volatiles /= 2;
     }
 
+    let pacification_modifier_percent = pacification_modifier_percent(location);
+    output.common_materials = output
+        .common_materials
+        .saturating_mul(pacification_modifier_percent)
+        .saturating_div(100);
+    output.volatiles = output
+        .volatiles
+        .saturating_mul(pacification_modifier_percent)
+        .saturating_div(100);
+    output.rare_materials = output
+        .rare_materials
+        .saturating_mul(pacification_modifier_percent)
+        .saturating_div(100);
+
     output
+}
+
+const fn pacification_modifier_percent(location: &LocationState) -> u32 {
+    if location.pacification_ticks_remaining > 0 {
+        50
+    } else {
+        100
+    }
 }
 
 const fn condition_for_wear(wear: u32) -> InfrastructureCondition {
@@ -911,7 +948,7 @@ const fn condition_for_wear(wear: u32) -> InfrastructureCondition {
     }
 }
 
-const fn initial_wear_for_condition(condition: &InfrastructureCondition) -> u32 {
+pub(crate) const fn initial_wear_for_condition(condition: &InfrastructureCondition) -> u32 {
     match condition {
         InfrastructureCondition::Operational => 0,
         InfrastructureCondition::Degraded => DEGRADED_WEAR_THRESHOLD,

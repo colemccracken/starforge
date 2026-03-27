@@ -429,6 +429,11 @@ fn render_location(location: &LocationView) -> String {
     {
         summary.push_str(&format!(" contesting={contesting_players:?}"));
     }
+    if let Some(pacification_ticks_remaining) = location.pacification_ticks_remaining
+        && pacification_ticks_remaining > 0
+    {
+        summary.push_str(&format!(" pacification={pacification_ticks_remaining}"));
+    }
     if let Some(relay_status) = &location.relay_status {
         summary.push_str(&format!(" relay={relay_status:?}"));
     }
@@ -642,6 +647,22 @@ fn render_event(event: &starforge_core::EventKind) -> String {
             ),
             None => format!("location #{} contested by P{}", location_id, attacker_id.0),
         },
+        starforge_core::EventKind::LocationCaptured {
+            location_id,
+            attacker_id,
+            defender_id,
+            pacification_ticks,
+        } => format!(
+            "location #{} captured by P{} from P{}; pacification={}",
+            location_id, attacker_id.0, defender_id.0, pacification_ticks
+        ),
+        starforge_core::EventKind::PacificationCompleted {
+            location_id,
+            player_id,
+        } => format!(
+            "pacification completed at #{} for P{}",
+            location_id, player_id.0
+        ),
         starforge_core::EventKind::TrainingRunStarted {
             target_tier,
             required_training_throughput,

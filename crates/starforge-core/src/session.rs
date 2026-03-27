@@ -197,11 +197,19 @@ impl GameSession {
             }
         }
 
-        self.refresh_visibility();
-
         for event in self.advance_training_runs() {
             self.event_log.push(event);
         }
+
+        for event in self.advance_pacification() {
+            self.event_log.push(event);
+        }
+
+        for event in self.advance_takeover_resolution() {
+            self.event_log.push(event);
+        }
+
+        self.refresh_visibility();
 
         let arrived_transits = self.state.resolve_arrived_transits();
         for transit in arrived_transits {
@@ -621,6 +629,9 @@ impl GameSession {
             stockpiles: Default::default(),
             hostile_remnant: None,
             contesting_players: Vec::new(),
+            takeover_attacker: None,
+            takeover_ticks_remaining: 0,
+            pacification_ticks_remaining: 0,
         });
         self.state
             .locations
@@ -1190,6 +1201,15 @@ impl GameSession {
             }
             TransitKind::Assault => {
                 let location = self.location_state(destination_location_id)?;
+                if location.territory == TerritoryState::Contested {
+                    return Err(ValidationError {
+                        code: "location_already_contested".to_owned(),
+                        message:
+                            "assault cannot be queued for a destination that is already contested"
+                                .to_owned(),
+                    });
+                }
+
                 if !self
                     .player_state(player_id)?
                     .visibility
@@ -1207,18 +1227,6 @@ impl GameSession {
                         code: "hostile_remnant_present".to_owned(),
                         message:
                             "assault expeditions currently require hostile remnants to be cleared first"
-                                .to_owned(),
-                    });
-                }
-
-                if location.territory == TerritoryState::Contested
-                    && (location.controller == Some(player_id)
-                        || location.contesting_players.contains(&player_id))
-                {
-                    return Err(ValidationError {
-                        code: "location_already_contested".to_owned(),
-                        message:
-                            "assault cannot be queued when the issuing player is already contesting the destination"
                                 .to_owned(),
                     });
                 }
@@ -1352,6 +1360,9 @@ impl GameSession {
             let defender_id = location.controller;
             location.territory = TerritoryState::Contested;
             crate::state::push_unique_sorted_player_id(&mut location.contesting_players, player_id);
+            location.takeover_attacker = Some(player_id);
+            location.takeover_ticks_remaining = takeover_duration_ticks();
+            location.pacification_ticks_remaining = 0;
             defender_id
         };
 
@@ -1522,6 +1533,162 @@ impl GameSession {
         events
     }
 
+    fn advance_takeover_resolution(&mut self) -> Vec<EventRecord> {
+        if self.state.victory != crate::VictoryState::Ongoing {
+            return Vec::new();
+        }
+
+        let mut captures = Vec::new();
+        for location in &mut self.state.locations {
+            if location.territory != TerritoryState::Contested {
+                location.takeover_attacker = None;
+                location.takeover_ticks_remaining = 0;
+                continue;
+            }
+
+            if location.takeover_ticks_remaining == 0 {
+                continue;
+            }
+
+            location.takeover_ticks_remaining -= 1;
+            if location.takeover_ticks_remaining > 0 {
+                continue;
+            }
+
+            let Some(attacker_id) = location.takeover_attacker else {
+                continue;
+            };
+            let Some(defender_id) = location.controller else {
+                continue;
+            };
+
+            location.territory = TerritoryState::Owned;
+            location.controller = Some(attacker_id);
+            location.relay_status = RelayStatus::Connected;
+            location.contesting_players.clear();
+            location.takeover_attacker = None;
+            location.infrastructure_projects.clear();
+            location.pacification_ticks_remaining = pacification_duration_ticks();
+
+            for infrastructure in &mut location.infrastructure {
+                if infrastructure.condition != InfrastructureCondition::Offline {
+                    infrastructure.condition = InfrastructureCondition::Degraded;
+                    infrastructure.wear = crate::state::initial_wear_for_condition(
+                        &InfrastructureCondition::Degraded,
+                    );
+                }
+            }
+
+            captures.push((location.location_id, attacker_id, defender_id));
+        }
+
+        if captures.is_empty() {
+            return Vec::new();
+        }
+
+        self.state.recompute_economy();
+
+        let mut events = Vec::new();
+        for (location_id, attacker_id, defender_id) in captures {
+            events.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: None,
+                kind: EventKind::LocationCaptured {
+                    location_id,
+                    attacker_id,
+                    defender_id,
+                    pacification_ticks: pacification_duration_ticks(),
+                },
+            });
+        }
+
+        for kind in self.economy_updated_events() {
+            events.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: None,
+                kind,
+            });
+        }
+
+        if let Some(winner) = self.military_conquest_winner() {
+            self.state.victory = crate::VictoryState::Won { winner };
+            events.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: Some(winner),
+                kind: EventKind::VictoryDeclared {
+                    winner,
+                    reason: "military_conquest".to_owned(),
+                },
+            });
+        }
+
+        events
+    }
+
+    fn advance_pacification(&mut self) -> Vec<EventRecord> {
+        let mut completed = Vec::new();
+        for location in &mut self.state.locations {
+            if location.pacification_ticks_remaining == 0 {
+                continue;
+            }
+
+            location.pacification_ticks_remaining -= 1;
+            if location.pacification_ticks_remaining == 0
+                && let Some(player_id) = location.controller
+            {
+                completed.push((location.location_id, player_id));
+            }
+        }
+
+        if completed.is_empty() {
+            return Vec::new();
+        }
+
+        self.state.recompute_economy();
+
+        let mut events = Vec::new();
+        for (location_id, player_id) in completed {
+            events.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: Some(player_id),
+                kind: EventKind::PacificationCompleted {
+                    location_id,
+                    player_id,
+                },
+            });
+        }
+
+        for kind in self.economy_updated_events() {
+            events.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: None,
+                kind,
+            });
+        }
+
+        events
+    }
+
+    fn military_conquest_winner(&self) -> Option<PlayerId> {
+        let surviving_players: Vec<PlayerId> = self
+            .state
+            .players
+            .iter()
+            .filter(|player| {
+                self.state.locations.iter().any(|location| {
+                    location.controller == Some(player.player_id)
+                        && location.territory == TerritoryState::Owned
+                })
+            })
+            .map(|player| player.player_id)
+            .collect();
+
+        match surviving_players.as_slice() {
+            [winner] => Some(*winner),
+            _ => None,
+        }
+    }
+
     fn event_visible_to_player(&self, player_id: PlayerId, event: &EventRecord) -> bool {
         match &event.kind {
             EventKind::SessionCreated { .. } | EventKind::TickAdvanced { .. } => true,
@@ -1545,8 +1712,19 @@ impl GameSession {
             | EventKind::InfrastructureConditionChanged { location_id, .. }
             | EventKind::HostileRemnantCleared { location_id }
             | EventKind::LocationClaimed { location_id, .. }
-            | EventKind::LocationContested { location_id, .. } => {
+            | EventKind::LocationContested { location_id, .. }
+            | EventKind::PacificationCompleted { location_id, .. } => {
                 self.location_is_observed_by_player(player_id, *location_id)
+            }
+            EventKind::LocationCaptured {
+                location_id,
+                attacker_id,
+                defender_id,
+                ..
+            } => {
+                *attacker_id == player_id
+                    || *defender_id == player_id
+                    || self.location_is_observed_by_player(player_id, *location_id)
             }
             EventKind::VictoryDeclared { .. } => true,
         }
@@ -1770,6 +1948,7 @@ fn project_location_for_player(
             territory: location.territory.clone(),
             controller: location.controller,
             contesting_players: Some(location.contesting_players.clone()),
+            pacification_ticks_remaining: Some(location.pacification_ticks_remaining),
             kind: Some(location.kind.clone()),
             resource_richness: Some(location.resource_richness.clone()),
             energy_potential: Some(location.energy_potential.clone()),
@@ -1793,6 +1972,7 @@ fn project_location_for_player(
             territory: location.territory.clone(),
             controller: location.controller,
             contesting_players: Some(location.contesting_players.clone()),
+            pacification_ticks_remaining: Some(location.pacification_ticks_remaining),
             kind: Some(location.kind.clone()),
             resource_richness: Some(location.resource_richness.clone()),
             energy_potential: Some(location.energy_potential.clone()),
@@ -1816,6 +1996,7 @@ fn project_location_for_player(
             territory: TerritoryState::Obscured,
             controller: None,
             contesting_players: None,
+            pacification_ticks_remaining: None,
             kind: Some(location.kind.clone()),
             resource_richness: Some(location.resource_richness.clone()),
             energy_potential: Some(location.energy_potential.clone()),
@@ -1838,6 +2019,7 @@ fn project_location_for_player(
         territory: TerritoryState::Obscured,
         controller: None,
         contesting_players: None,
+        pacification_ticks_remaining: None,
         kind: None,
         resource_richness: None,
         energy_potential: None,
@@ -1916,6 +2098,14 @@ fn minimum_worlds_for_tier(target_tier: u8) -> usize {
         5 => 4,
         _ => usize::MAX,
     }
+}
+
+const fn takeover_duration_ticks() -> u32 {
+    8
+}
+
+const fn pacification_duration_ticks() -> u32 {
+    12
 }
 
 fn repair_cost(

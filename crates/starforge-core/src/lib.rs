@@ -32,7 +32,7 @@ mod tests {
         InfrastructureKind, InfrastructureSeed, LocationConnection, LocationKind,
         LocationVisibility, MatchSeed, PlayerId, RelayStatus, ResourceRichness, ResourceStockpiles,
         ScenarioConfig, SessionId, StartingLocation, StrategicPosition, TerritoryState,
-        ThreatLevel, TickId,
+        ThreatLevel, TickId, VictoryState,
     };
 
     fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
@@ -330,6 +330,64 @@ mod tests {
                 to_location_id: 2,
                 travel_time_ticks: 10,
             }],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn assault_with_defender_colony_scenario() -> ScenarioConfig {
+        let defender_colony = StartingLocation {
+            location_id: 3,
+            name: "Bastion".to_owned(),
+            kind: LocationKind::BarrenWorld,
+            resource_richness: ResourceRichness::Moderate,
+            energy_potential: EnergyPotential::Moderate,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Peripheral,
+            territory: TerritoryState::Owned,
+            controller: Some(PlayerId::new(2)),
+            homeworld_of: None,
+            relay_status: RelayStatus::Connected,
+            orbital_slots: 2,
+            has_environmental_hazard: false,
+            starting_infrastructure: vec![
+                infrastructure_seed(InfrastructureKind::CommandNexus),
+                infrastructure_seed(InfrastructureKind::EnergyProducer),
+                infrastructure_seed(InfrastructureKind::Datacenter),
+                infrastructure_seed(InfrastructureKind::RelayUplink),
+            ],
+            hostile_remnant: None,
+        };
+
+        ScenarioConfig {
+            starting_locations: vec![
+                compute_homeworld(
+                    PlayerId::new(1),
+                    1,
+                    "Helios",
+                    EnergyPotential::High,
+                    BuildCapacity::Expansive,
+                ),
+                compute_homeworld(
+                    PlayerId::new(2),
+                    2,
+                    "Selene",
+                    EnergyPotential::High,
+                    BuildCapacity::Expansive,
+                ),
+                defender_colony,
+            ],
+            connections: vec![
+                LocationConnection {
+                    from_location_id: 1,
+                    to_location_id: 2,
+                    travel_time_ticks: 10,
+                },
+                LocationConnection {
+                    from_location_id: 2,
+                    to_location_id: 3,
+                    travel_time_ticks: 10,
+                },
+            ],
             ..ScenarioConfig::test_fixture()
         }
     }
@@ -1966,6 +2024,159 @@ mod tests {
                 attacker_id,
                 defender_id,
             } if *attacker_id == PlayerId::new(1) && *defender_id == Some(PlayerId::new(2))
+        )));
+    }
+
+    #[test]
+    fn contested_world_is_captured_and_recovers_after_pacification() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            assault_with_defender_colony_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(10);
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchAssaultTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("assault transit should be accepted");
+        session.advance_ticks(10);
+        session.advance_ticks(8);
+
+        let captured_location = session
+            .state()
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("captured location should exist");
+        assert_eq!(captured_location.territory, TerritoryState::Owned);
+        assert_eq!(captured_location.controller, Some(PlayerId::new(1)));
+        assert!(captured_location.contesting_players.is_empty());
+        assert_eq!(captured_location.takeover_attacker, None);
+        assert_eq!(captured_location.takeover_ticks_remaining, 0);
+        assert_eq!(captured_location.pacification_ticks_remaining, 12);
+        assert!(
+            captured_location
+                .infrastructure
+                .iter()
+                .all(|infrastructure| infrastructure.condition
+                    != InfrastructureCondition::Operational)
+        );
+
+        let pacifying_throughput = captured_location.economy.empire_usable_throughput;
+
+        let attacker_view = session
+            .player_view(PlayerId::new(1))
+            .expect("attacker view should be available");
+        let defender_view = session
+            .player_view(PlayerId::new(2))
+            .expect("defender view should be available");
+        let attacker_location = attacker_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("attacker should still see the captured location");
+        let defender_location = defender_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("defender should still know the captured location exists");
+
+        assert_eq!(attacker_location.visibility, LocationVisibility::Owned);
+        assert_eq!(attacker_location.controller, Some(PlayerId::new(1)));
+        assert_eq!(attacker_location.pacification_ticks_remaining, Some(12));
+        assert_eq!(defender_location.visibility, LocationVisibility::Surveyed);
+        assert_eq!(defender_location.territory, TerritoryState::Obscured);
+        assert_eq!(session.state().victory, VictoryState::Ongoing);
+
+        let defender_events = session
+            .player_events(PlayerId::new(2), TickId::default())
+            .expect("defender event feed should be available");
+        assert!(defender_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::LocationCaptured {
+                location_id: 2,
+                attacker_id,
+                defender_id,
+                pacification_ticks: 12,
+            } if *attacker_id == PlayerId::new(1) && *defender_id == PlayerId::new(2)
+        )));
+
+        session.advance_ticks(12);
+
+        let recovered_location = session
+            .state()
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("captured location should still exist");
+        assert_eq!(recovered_location.pacification_ticks_remaining, 0);
+        assert!(recovered_location.economy.empire_usable_throughput > pacifying_throughput);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::PacificationCompleted {
+                location_id: 2,
+                player_id,
+            } if *player_id == PlayerId::new(1)
+        )));
+    }
+
+    #[test]
+    fn capturing_last_enemy_world_triggers_conquest_victory() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            assault_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(10);
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchAssaultTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("assault transit should be accepted");
+        session.advance_ticks(10);
+        session.advance_ticks(8);
+
+        assert_eq!(
+            session.state().victory,
+            VictoryState::Won {
+                winner: PlayerId::new(1),
+            }
+        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::VictoryDeclared { winner, reason }
+                if *winner == PlayerId::new(1) && reason == "military_conquest"
         )));
     }
 
