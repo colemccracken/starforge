@@ -1,9 +1,16 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use starforge_core::{InfrastructureKind, PlayerId, RelayStatus, ResearchBranch};
+use starforge_api::SessionMode;
+use starforge_core::{InfrastructureKind, PlayerId, RelayStatus, ResearchBranch, SessionId};
+
+pub(crate) const DEFAULT_API_URL: &str = "http://127.0.0.1:8080";
+pub(crate) const DEFAULT_BIND_ADDRESS: &str = "127.0.0.1:8080";
 
 const AFTER_HELP: &str = r#"Command Quick Reference:
+  starforge-cli daemon [--bind-address <ADDR>]
+  starforge-cli play create --player <PLAYER> [--mode <MODE>] [--api-url <URL>]
+  starforge-cli play join --session <SESSION> --player <PLAYER> [--api-url <URL>]
   starforge-cli new [--session <PATH>]
   starforge-cli status --session <PATH> --player <PLAYER>
   starforge-cli map --session <PATH> --player <PLAYER>
@@ -64,6 +71,8 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub(crate) enum Command {
+    Daemon(DaemonArgs),
+    Play(PlayArgs),
     New(NewArgs),
     Status(SessionPlayerArgs),
     Map(SessionPlayerArgs),
@@ -88,19 +97,86 @@ pub(crate) enum Command {
     Train(TrainArgs),
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct DaemonArgs {
+    #[arg(long, default_value = DEFAULT_BIND_ADDRESS, value_name = "ADDR")]
+    pub(crate) bind_address: String,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct PlayArgs {
+    #[command(subcommand)]
+    pub(crate) command: PlayCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq, Clone)]
+pub(crate) enum PlayCommand {
+    Create(PlayCreateArgs),
+    Join(PlayJoinArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct PlayCreateArgs {
+    #[arg(long, short = 'p', value_name = "PLAYER", value_parser = parse_player_id)]
+    pub(crate) player: PlayerId,
+    #[arg(long, default_value = "competitive", value_name = "MODE", value_parser = parse_session_mode)]
+    pub(crate) mode: SessionMode,
+    #[arg(long, default_value = DEFAULT_API_URL, value_name = "URL")]
+    pub(crate) api_url: String,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct PlayJoinArgs {
+    #[arg(long, short = 's', value_name = "SESSION", value_parser = parse_session_id)]
+    pub(crate) session: SessionId,
+    #[arg(long, short = 'p', value_name = "PLAYER", value_parser = parse_player_id)]
+    pub(crate) player: PlayerId,
+    #[arg(long, default_value = DEFAULT_API_URL, value_name = "URL")]
+    pub(crate) api_url: String,
+}
+
+#[derive(Debug, Parser, PartialEq, Eq)]
+#[command(
+    name = "player-scoped",
+    subcommand_required = true,
+    arg_required_else_help = true
+)]
+pub(crate) struct PlayerScopedCli {
+    #[command(subcommand)]
+    pub(crate) command: PlayerScopedCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq, Clone)]
+pub(crate) enum PlayerScopedCommand {
+    Status,
+    Map,
+    Events(PlayerEventsArgs),
+    Survey(TransitSpec),
+    Pacify(TransitSpec),
+    Claim(TransitSpec),
+    Assault(TransitSpec),
+    Strike(TransitSpec),
+    Build(ScopedInfrastructureArgs),
+    Repair(ScopedInfrastructureArgs),
+    Relay(ScopedRelayArgs),
+    Budget(ScopedBudgetArgs),
+    Research(ScopedResearchArgs),
+    Train(ScopedTrainArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
 pub(crate) struct NewArgs {
     #[arg(long, short = 's', value_name = "PATH")]
     pub(crate) session: Option<PathBuf>,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
 pub(crate) struct SessionArg {
     #[arg(long, short = 's', value_name = "PATH")]
     pub(crate) session: PathBuf,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
 pub(crate) struct SessionPlayerArgs {
     #[command(flatten)]
     pub(crate) session: SessionArg,
@@ -108,15 +184,21 @@ pub(crate) struct SessionPlayerArgs {
     pub(crate) player: PlayerId,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
-pub(crate) struct EventsArgs {
-    #[command(flatten)]
-    pub(crate) common: SessionPlayerArgs,
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct PlayerEventsArgs {
     #[arg(long, default_value_t = 0, value_name = "TICK")]
     pub(crate) from_tick: u64,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct EventsArgs {
+    #[command(flatten)]
+    pub(crate) common: SessionPlayerArgs,
+    #[command(flatten)]
+    pub(crate) options: PlayerEventsArgs,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
 pub(crate) struct StepArgs {
     #[command(flatten)]
     pub(crate) session: SessionArg,
@@ -124,7 +206,7 @@ pub(crate) struct StepArgs {
     pub(crate) ticks: u32,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
 pub(crate) struct SaveArgs {
     #[command(flatten)]
     pub(crate) session: SessionArg,
@@ -132,7 +214,7 @@ pub(crate) struct SaveArgs {
     pub(crate) output: Option<PathBuf>,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
 pub(crate) struct LoadArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) input: PathBuf,
@@ -140,7 +222,7 @@ pub(crate) struct LoadArgs {
     pub(crate) session: Option<PathBuf>,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
 pub(crate) struct ScenarioRunArgs {
     #[arg(long, value_name = "PATH")]
     pub(crate) ruleset: Option<PathBuf>,
@@ -152,40 +234,56 @@ pub(crate) struct ScenarioRunArgs {
     pub(crate) ticks: u32,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
-pub(crate) struct TransitArgs {
-    #[command(flatten)]
-    pub(crate) common: SessionPlayerArgs,
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct TransitSpec {
     #[arg(long, value_name = "LOCATION")]
     pub(crate) origin: u32,
     #[arg(long, value_name = "LOCATION")]
     pub(crate) destination: u32,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
-pub(crate) struct InfrastructureArgs {
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct TransitArgs {
     #[command(flatten)]
     pub(crate) common: SessionPlayerArgs,
+    #[command(flatten)]
+    pub(crate) transit: TransitSpec,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct ScopedInfrastructureArgs {
     #[arg(long, value_name = "LOCATION")]
     pub(crate) location: u32,
     #[arg(long, value_name = "KIND", value_parser = parse_infrastructure_kind)]
     pub(crate) kind: InfrastructureKind,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
-pub(crate) struct RelayArgs {
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct InfrastructureArgs {
     #[command(flatten)]
     pub(crate) common: SessionPlayerArgs,
+    #[command(flatten)]
+    pub(crate) infrastructure: ScopedInfrastructureArgs,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct ScopedRelayArgs {
     #[arg(long, value_name = "LOCATION")]
     pub(crate) location: u32,
     #[arg(long, value_name = "STATUS", value_parser = parse_relay_status)]
     pub(crate) status: RelayStatus,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
-pub(crate) struct BudgetArgs {
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct RelayArgs {
     #[command(flatten)]
     pub(crate) common: SessionPlayerArgs,
+    #[command(flatten)]
+    pub(crate) relay: ScopedRelayArgs,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct ScopedBudgetArgs {
     #[arg(long, value_name = "N")]
     pub(crate) upkeep: u32,
     #[arg(long, value_name = "N")]
@@ -196,22 +294,120 @@ pub(crate) struct BudgetArgs {
     pub(crate) agents: u32,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
-pub(crate) struct ResearchArgs {
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct BudgetArgs {
     #[command(flatten)]
     pub(crate) common: SessionPlayerArgs,
+    #[command(flatten)]
+    pub(crate) budget: ScopedBudgetArgs,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct ScopedResearchArgs {
     #[arg(long, value_name = "BRANCH", value_parser = parse_research_branch)]
     pub(crate) branch: ResearchBranch,
     #[arg(long, value_name = "LEVEL")]
     pub(crate) target_level: u8,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct ResearchArgs {
+    #[command(flatten)]
+    pub(crate) common: SessionPlayerArgs,
+    #[command(flatten)]
+    pub(crate) research: ScopedResearchArgs,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
+pub(crate) struct ScopedTrainArgs {
+    #[arg(long, value_name = "TIER")]
+    pub(crate) target_tier: u8,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Clone)]
 pub(crate) struct TrainArgs {
     #[command(flatten)]
     pub(crate) common: SessionPlayerArgs,
-    #[arg(long, value_name = "TIER")]
-    pub(crate) target_tier: u8,
+    #[command(flatten)]
+    pub(crate) train: ScopedTrainArgs,
+}
+
+pub(crate) fn parse_player_scoped_command(input: &str) -> Result<PlayerScopedCommand, clap::Error> {
+    let mut argv = vec!["player-scoped".to_owned()];
+    argv.extend(input.split_whitespace().map(ToOwned::to_owned));
+    PlayerScopedCli::try_parse_from(argv).map(|cli| cli.command)
+}
+
+impl PlayerScopedCommand {
+    pub(crate) fn to_command_kind(&self) -> Option<starforge_core::CommandKind> {
+        match self {
+            Self::Status | Self::Map | Self::Events(_) => None,
+            Self::Survey(args) => Some(starforge_core::CommandKind::DispatchSurveyTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            }),
+            Self::Pacify(args) => Some(starforge_core::CommandKind::DispatchPacificationTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            }),
+            Self::Claim(args) => Some(starforge_core::CommandKind::DispatchClaimTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            }),
+            Self::Assault(args) => Some(starforge_core::CommandKind::DispatchAssaultTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            }),
+            Self::Strike(args) => Some(starforge_core::CommandKind::DispatchStrategicStrike {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            }),
+            Self::Build(args) => Some(
+                starforge_core::CommandKind::QueueInfrastructureConstruction {
+                    location_id: args.location,
+                    infrastructure_kind: args.kind.clone(),
+                },
+            ),
+            Self::Repair(args) => Some(starforge_core::CommandKind::QueueInfrastructureRepair {
+                location_id: args.location,
+                infrastructure_kind: args.kind.clone(),
+            }),
+            Self::Relay(args) => Some(starforge_core::CommandKind::SetRelayStatus {
+                location_id: args.location,
+                relay_status: args.status.clone(),
+            }),
+            Self::Budget(args) => Some(starforge_core::CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: args.upkeep,
+                reserved_for_research: args.research,
+                reserved_for_training: args.training,
+                reserved_for_agents: args.agents,
+            }),
+            Self::Research(args) => Some(starforge_core::CommandKind::StartResearchProject {
+                branch: args.branch,
+                target_level: args.target_level,
+            }),
+            Self::Train(args) => Some(starforge_core::CommandKind::StartTrainingRun {
+                target_tier: args.target_tier,
+            }),
+        }
+    }
+
+    pub(crate) fn success_message(&self) -> Option<&'static str> {
+        match self {
+            Self::Status | Self::Map | Self::Events(_) => None,
+            Self::Survey(_) => Some("survey expedition queued"),
+            Self::Pacify(_) => Some("pacification expedition queued"),
+            Self::Claim(_) => Some("claim expedition queued"),
+            Self::Assault(_) => Some("assault expedition queued"),
+            Self::Strike(_) => Some("strategic strike queued"),
+            Self::Build(_) => Some("construction queued"),
+            Self::Repair(_) => Some("repair queued"),
+            Self::Relay(_) => Some("relay status updated"),
+            Self::Budget(_) => Some("throughput budget updated"),
+            Self::Research(_) => Some("research project started"),
+            Self::Train(_) => Some("training run started"),
+        }
+    }
 }
 
 fn parse_player_id(value: &str) -> Result<PlayerId, String> {
@@ -219,6 +415,21 @@ fn parse_player_id(value: &str) -> Result<PlayerId, String> {
         .parse::<u8>()
         .map(PlayerId::new)
         .map_err(|_| format!("invalid player: '{value}'"))
+}
+
+fn parse_session_id(value: &str) -> Result<SessionId, String> {
+    value
+        .parse::<u64>()
+        .map(SessionId::new)
+        .map_err(|_| format!("invalid session id: '{value}'"))
+}
+
+fn parse_session_mode(value: &str) -> Result<SessionMode, String> {
+    match normalize_token(value).as_str() {
+        "competitive" => Ok(SessionMode::Competitive),
+        "sandbox" => Ok(SessionMode::Sandbox),
+        _ => Err(format!("unknown session mode '{value}'")),
+    }
 }
 
 fn parse_infrastructure_kind(value: &str) -> Result<InfrastructureKind, String> {
@@ -265,192 +476,87 @@ fn normalize_token(value: &str) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use clap::{Parser, error::ErrorKind};
-    use starforge_core::{InfrastructureKind, PlayerId, RelayStatus, ResearchBranch};
+    use clap::Parser;
+    use starforge_api::SessionMode;
+    use starforge_core::{InfrastructureKind, PlayerId, RelayStatus, ResearchBranch, SessionId};
 
     use super::{
-        BudgetArgs, Cli, Command, EventsArgs, InfrastructureArgs, LoadArgs, NewArgs, RelayArgs,
-        ResearchArgs, SaveArgs, ScenarioRunArgs, SessionArg, SessionPlayerArgs, StepArgs,
-        TrainArgs, TransitArgs, parse_infrastructure_kind, parse_relay_status,
-        parse_research_branch,
+        BudgetArgs, Cli, Command, DaemonArgs, NewArgs, PlayArgs, PlayCommand, PlayCreateArgs,
+        PlayJoinArgs, PlayerEventsArgs, PlayerScopedCommand, ResearchArgs, SaveArgs,
+        ScenarioRunArgs, ScopedBudgetArgs, ScopedResearchArgs, SessionArg, SessionPlayerArgs,
+        TransitArgs, TransitSpec, parse_infrastructure_kind, parse_player_scoped_command,
+        parse_relay_status, parse_research_branch,
     };
 
     fn parse_ok(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("arguments should parse successfully")
     }
 
-    fn parse_err(args: &[&str]) -> clap::Error {
-        Cli::try_parse_from(args).expect_err("arguments should fail to parse")
-    }
-
     #[test]
-    fn new_defaults_session_path_when_flag_is_omitted() {
+    fn daemon_parses_bind_address() {
         assert_eq!(
-            parse_ok(&["starforge-cli", "new"]),
+            parse_ok(&[
+                "starforge-cli",
+                "daemon",
+                "--bind-address",
+                "127.0.0.1:9000"
+            ]),
             Cli {
                 api_base: None,
-                command: Command::New(NewArgs { session: None }),
-            }
-        );
-    }
-
-    #[test]
-    fn new_accepts_short_session_alias() {
-        assert_eq!(
-            parse_ok(&["starforge-cli", "new", "-s", "session.json"]),
-            Cli {
-                api_base: None,
-                command: Command::New(NewArgs {
-                    session: Some(PathBuf::from("session.json")),
+                command: Command::Daemon(DaemonArgs {
+                    bind_address: "127.0.0.1:9000".to_owned(),
                 }),
             }
         );
     }
 
     #[test]
-    fn status_accepts_long_session_and_player_flags() {
+    fn play_create_parses_player_mode_and_api_url() {
         assert_eq!(
             parse_ok(&[
                 "starforge-cli",
-                "status",
-                "--session",
-                "session.json",
+                "play",
+                "create",
                 "--player",
                 "1",
+                "--mode",
+                "sandbox",
+                "--api-url",
+                "http://127.0.0.1:9999",
             ]),
             Cli {
                 api_base: None,
-                command: Command::Status(SessionPlayerArgs {
-                    session: SessionArg {
-                        session: PathBuf::from("session.json"),
-                    },
-                    player: PlayerId::new(1),
+                command: Command::Play(PlayArgs {
+                    command: PlayCommand::Create(PlayCreateArgs {
+                        player: PlayerId::new(1),
+                        mode: SessionMode::Sandbox,
+                        api_url: "http://127.0.0.1:9999".to_owned(),
+                    }),
                 }),
             }
         );
     }
 
     #[test]
-    fn run_accepts_short_session_alias() {
-        assert_eq!(
-            parse_ok(&["starforge-cli", "run", "-s", "session.json"]),
-            Cli {
-                api_base: None,
-                command: Command::Run(SessionArg {
-                    session: PathBuf::from("session.json"),
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn metrics_accepts_short_session_alias() {
-        assert_eq!(
-            parse_ok(&["starforge-cli", "metrics", "-s", "session.json"]),
-            Cli {
-                api_base: None,
-                command: Command::Metrics(SessionArg {
-                    session: PathBuf::from("session.json"),
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn save_accepts_output_path() {
+    fn play_join_parses_session_and_player() {
         assert_eq!(
             parse_ok(&[
                 "starforge-cli",
-                "save",
-                "-s",
-                "session.json",
-                "--output",
-                "out.json"
+                "play",
+                "join",
+                "--session",
+                "7",
+                "--player",
+                "2",
             ]),
             Cli {
                 api_base: None,
-                command: Command::Save(SaveArgs {
-                    session: SessionArg {
-                        session: PathBuf::from("session.json"),
-                    },
-                    output: Some(PathBuf::from("out.json")),
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn load_accepts_input_and_optional_session() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "load",
-                "--input",
-                "snapshot.json",
-                "-s",
-                "session.json",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Load(LoadArgs {
-                    input: PathBuf::from("snapshot.json"),
-                    session: Some(PathBuf::from("session.json")),
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn scenario_run_accepts_custom_paths() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "scenario-run",
-                "--ruleset",
-                "ruleset.yaml",
-                "--scenario",
-                "scenario.yaml",
-                "-s",
-                "session.json",
-                "--ticks",
-                "10",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::ScenarioRun(ScenarioRunArgs {
-                    ruleset: Some(PathBuf::from("ruleset.yaml")),
-                    scenario: Some(PathBuf::from("scenario.yaml")),
-                    session: Some(PathBuf::from("session.json")),
-                    ticks: 10,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn pause_accepts_short_session_alias() {
-        assert_eq!(
-            parse_ok(&["starforge-cli", "pause", "-s", "session.json"]),
-            Cli {
-                api_base: None,
-                command: Command::Pause(SessionArg {
-                    session: PathBuf::from("session.json"),
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn status_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&["starforge-cli", "status", "-s", "session.json", "-p", "1"]),
-            Cli {
-                api_base: None,
-                command: Command::Status(SessionPlayerArgs {
-                    session: SessionArg {
-                        session: PathBuf::from("session.json"),
-                    },
-                    player: PlayerId::new(1),
+                command: Command::Play(PlayArgs {
+                    command: PlayCommand::Join(PlayJoinArgs {
+                        session: SessionId::new(7),
+                        player: PlayerId::new(2),
+                        api_url: super::DEFAULT_API_URL.to_owned(),
+                    }),
                 }),
             }
         );
@@ -482,33 +588,154 @@ mod tests {
     }
 
     #[test]
-    fn assault_accepts_transit_arguments() {
+    fn save_and_load_parse_named_arguments() {
         assert_eq!(
             parse_ok(&[
                 "starforge-cli",
-                "assault",
-                "--session",
+                "save",
+                "-s",
                 "session.json",
-                "--player",
-                "1",
-                "--origin",
-                "4",
-                "--destination",
-                "9",
+                "--output",
+                "out.json"
             ]),
             Cli {
                 api_base: None,
-                command: Command::Assault(TransitArgs {
+                command: Command::Save(SaveArgs {
+                    session: SessionArg {
+                        session: PathBuf::from("session.json"),
+                    },
+                    output: Some(PathBuf::from("out.json")),
+                }),
+            }
+        );
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "load",
+                "--input",
+                "snapshot.json",
+                "-s",
+                "session.json",
+            ]),
+            Cli {
+                api_base: None,
+                command: Command::Load(super::LoadArgs {
+                    input: PathBuf::from("snapshot.json"),
+                    session: Some(PathBuf::from("session.json")),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn scenario_run_and_budget_parse_named_arguments() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "scenario-run",
+                "--ruleset",
+                "ruleset.yaml",
+                "--scenario",
+                "scenario.yaml",
+                "-s",
+                "session.json",
+                "--ticks",
+                "10",
+            ]),
+            Cli {
+                api_base: None,
+                command: Command::ScenarioRun(ScenarioRunArgs {
+                    ruleset: Some(PathBuf::from("ruleset.yaml")),
+                    scenario: Some(PathBuf::from("scenario.yaml")),
+                    session: Some(PathBuf::from("session.json")),
+                    ticks: 10,
+                }),
+            }
+        );
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "budget",
+                "-s",
+                "session.json",
+                "-p",
+                "1",
+                "--upkeep",
+                "0",
+                "--research",
+                "24",
+                "--training",
+                "20",
+                "--agents",
+                "0",
+            ]),
+            Cli {
+                api_base: None,
+                command: Command::Budget(BudgetArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
                             session: PathBuf::from("session.json"),
                         },
                         player: PlayerId::new(1),
                     },
-                    origin: 4,
-                    destination: 9,
+                    budget: ScopedBudgetArgs {
+                        upkeep: 0,
+                        research: 24,
+                        training: 20,
+                        agents: 0,
+                    },
                 }),
             }
+        );
+    }
+
+    #[test]
+    fn research_command_parses_branch_and_level() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "research",
+                "-s",
+                "session.json",
+                "-p",
+                "1",
+                "--branch",
+                "models",
+                "--target-level",
+                "2",
+            ]),
+            Cli {
+                api_base: None,
+                command: Command::Research(ResearchArgs {
+                    common: SessionPlayerArgs {
+                        session: SessionArg {
+                            session: PathBuf::from("session.json"),
+                        },
+                        player: PlayerId::new(1),
+                    },
+                    research: ScopedResearchArgs {
+                        branch: ResearchBranch::Models,
+                        target_level: 2,
+                    },
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn player_scoped_parser_supports_research_and_events() {
+        assert_eq!(
+            parse_player_scoped_command("research --branch industry --target-level 1")
+                .expect("player scoped command should parse"),
+            PlayerScopedCommand::Research(ScopedResearchArgs {
+                branch: ResearchBranch::Industry,
+                target_level: 1,
+            })
+        );
+        assert_eq!(
+            parse_player_scoped_command("events --from-tick 12")
+                .expect("player scoped command should parse"),
+            PlayerScopedCommand::Events(PlayerEventsArgs { from_tick: 12 })
         );
     }
 
@@ -536,468 +763,39 @@ mod tests {
                         },
                         player: PlayerId::new(1),
                     },
-                    origin: 3,
-                    destination: 9,
+                    transit: TransitSpec {
+                        origin: 3,
+                        destination: 9,
+                    },
                 }),
             }
         );
     }
 
     #[test]
-    fn map_accepts_short_session_and_player_aliases() {
+    fn new_defaults_session_path_when_flag_is_omitted() {
         assert_eq!(
-            parse_ok(&["starforge-cli", "map", "-s", "session.json", "-p", "2"]),
+            parse_ok(&["starforge-cli", "new"]),
             Cli {
                 api_base: None,
-                command: Command::Map(SessionPlayerArgs {
-                    session: SessionArg {
-                        session: PathBuf::from("session.json"),
-                    },
-                    player: PlayerId::new(2),
-                }),
+                command: Command::New(NewArgs { session: None }),
             }
         );
     }
 
     #[test]
-    fn events_defaults_from_tick_to_zero() {
+    fn infrastructure_relay_and_research_parsers_accept_aliases() {
         assert_eq!(
-            parse_ok(&["starforge-cli", "events", "-s", "session.json", "-p", "1"]),
-            Cli {
-                api_base: None,
-                command: Command::Events(EventsArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    from_tick: 0,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn events_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "events",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--from-tick",
-                "4",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Events(EventsArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    from_tick: 4,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn step_accepts_short_session_alias() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "step",
-                "-s",
-                "session.json",
-                "--ticks",
-                "3"
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Step(StepArgs {
-                    session: SessionArg {
-                        session: PathBuf::from("session.json"),
-                    },
-                    ticks: 3,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn survey_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "survey",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--origin",
-                "7",
-                "--destination",
-                "9",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Survey(TransitArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    origin: 7,
-                    destination: 9,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn pacify_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "pacify",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--origin",
-                "7",
-                "--destination",
-                "9",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Pacify(TransitArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    origin: 7,
-                    destination: 9,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn claim_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "claim",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--origin",
-                "7",
-                "--destination",
-                "9",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Claim(TransitArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    origin: 7,
-                    destination: 9,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn build_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "build",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--location",
-                "5",
-                "--kind",
-                "command-nexus",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Build(InfrastructureArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    location: 5,
-                    kind: InfrastructureKind::CommandNexus,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn repair_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "repair",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--location",
-                "5",
-                "--kind",
-                "datacenter",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Repair(InfrastructureArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    location: 5,
-                    kind: InfrastructureKind::Datacenter,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn relay_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "relay",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--location",
-                "5",
-                "--status",
-                "disconnected",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Relay(RelayArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    location: 5,
-                    status: RelayStatus::Disconnected,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn budget_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "budget",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--upkeep",
-                "10",
-                "--research",
-                "15",
-                "--training",
-                "20",
-                "--agents",
-                "30",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Budget(BudgetArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    upkeep: 10,
-                    research: 15,
-                    training: 20,
-                    agents: 30,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn research_accepts_named_branch_and_target_level() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "research",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--branch",
-                "warfare",
-                "--target-level",
-                "2",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Research(ResearchArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    branch: ResearchBranch::Warfare,
-                    target_level: 2,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn train_accepts_short_session_and_player_aliases() {
-        assert_eq!(
-            parse_ok(&[
-                "starforge-cli",
-                "train",
-                "-s",
-                "session.json",
-                "-p",
-                "1",
-                "--target-tier",
-                "4",
-            ]),
-            Cli {
-                api_base: None,
-                command: Command::Train(TrainArgs {
-                    common: SessionPlayerArgs {
-                        session: SessionArg {
-                            session: PathBuf::from("session.json"),
-                        },
-                        player: PlayerId::new(1),
-                    },
-                    target_tier: 4,
-                }),
-            }
-        );
-    }
-
-    #[test]
-    fn legacy_positional_status_syntax_is_rejected() {
-        let error = parse_err(&["starforge-cli", "status", "session.json", "1"]);
-        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
-        assert!(error.to_string().contains("session.json"));
-    }
-
-    #[test]
-    fn legacy_positional_survey_syntax_is_rejected() {
-        let error = parse_err(&["starforge-cli", "survey", "session.json", "1", "2", "3"]);
-        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
-        assert!(error.to_string().contains("session.json"));
-    }
-
-    #[test]
-    fn unsupported_short_alias_for_ticks_is_rejected() {
-        let error = parse_err(&["starforge-cli", "step", "-s", "session.json", "-t", "3"]);
-        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
-        assert!(error.to_string().contains("-t"));
-    }
-
-    #[test]
-    fn unsupported_short_alias_for_target_tier_is_rejected() {
-        let error = parse_err(&[
-            "starforge-cli",
-            "train",
-            "-s",
-            "session.json",
-            "-p",
-            "1",
-            "-t",
-            "3",
-        ]);
-        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
-        assert!(error.to_string().contains("-t"));
-    }
-
-    #[test]
-    fn unsupported_short_alias_for_origin_is_rejected() {
-        let error = parse_err(&[
-            "starforge-cli",
-            "survey",
-            "-s",
-            "session.json",
-            "-p",
-            "1",
-            "-o",
-            "1",
-            "--destination",
-            "2",
-        ]);
-        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
-        assert!(error.to_string().contains("-o"));
-    }
-
-    #[test]
-    fn infrastructure_kind_parser_accepts_existing_alias_forms() {
-        assert_eq!(
-            parse_infrastructure_kind("CommandNexus"),
-            Ok(InfrastructureKind::CommandNexus)
+            parse_infrastructure_kind("ground defense site").expect("kind should parse"),
+            InfrastructureKind::GroundDefenseSite
         );
         assert_eq!(
-            parse_infrastructure_kind("command_nexus"),
-            Ok(InfrastructureKind::CommandNexus)
+            parse_relay_status("disconnected").expect("status should parse"),
+            RelayStatus::Disconnected
         );
         assert_eq!(
-            parse_infrastructure_kind("command-nexus"),
-            Ok(InfrastructureKind::CommandNexus)
-        );
-    }
-
-    #[test]
-    fn relay_status_parser_accepts_connected_and_disconnected() {
-        assert_eq!(parse_relay_status("connected"), Ok(RelayStatus::Connected));
-        assert_eq!(
-            parse_relay_status("disconnected"),
-            Ok(RelayStatus::Disconnected)
-        );
-    }
-
-    #[test]
-    fn research_branch_parser_accepts_variants() {
-        assert_eq!(parse_research_branch("models"), Ok(ResearchBranch::Models));
-        assert_eq!(parse_research_branch("Model"), Ok(ResearchBranch::Models));
-        assert_eq!(
-            parse_research_branch("war-fare"),
-            Ok(ResearchBranch::Warfare)
+            parse_research_branch("model").expect("branch should parse"),
+            ResearchBranch::Models
         );
     }
 }

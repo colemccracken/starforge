@@ -1085,8 +1085,8 @@ pub(crate) fn push_unique_sorted_player_id(values: &mut Vec<PlayerId>, value: Pl
     }
 }
 
-const DEGRADED_WEAR_THRESHOLD: u32 = 100;
-const OFFLINE_WEAR_THRESHOLD: u32 = 200;
+const DEGRADED_WEAR_THRESHOLD: u32 = 300;
+const OFFLINE_WEAR_THRESHOLD: u32 = 600;
 
 fn initial_stockpiles(location: &StartingLocation) -> ResourceStockpiles {
     if location.homeworld_of.is_some() {

@@ -1029,7 +1029,7 @@ mod tests {
                 CommandKind::StartTrainingRun { target_tier: 2 },
             )
             .expect("training should start");
-        session.advance_ticks(8);
+        session.advance_ticks(32);
 
         let player = session
             .player_view(PlayerId::new(1))

@@ -15,4 +15,6 @@ starforge-taxonomy = { path = "../starforge-taxonomy" }
 tokio.workspace = true
 
 [dev-dependencies]
+reqwest.workspace = true
+tempfile = "3"
 tower = { version = "0.5.2", features = ["util"] }

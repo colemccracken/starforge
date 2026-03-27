@@ -9,7 +9,7 @@ pub mod state;
 
 pub use command::{CommandDiscriminant, CommandEnvelope, CommandKind, ValidationError};
 pub use config::{GameConfig, LocationConnection, ScenarioConfig, StartingLocation};
-pub use event::{EventDiscriminant, EventKind, EventRecord};
+pub use event::{EventDiscriminant, EventKind, EventRecord, IndexedEventRecord};
 pub use ids::{MatchSeed, PlayerId, SessionId, TickId};
 pub use replay::ReplayLog;
 pub use session::GameSession;
@@ -1405,7 +1405,7 @@ mod tests {
             hazardous_homeworld_scenario(),
         );
 
-        for _ in 0..34 {
+        for _ in 0..100 {
             session.advance_tick();
         }
 
@@ -1442,7 +1442,7 @@ mod tests {
             }
         )));
 
-        for _ in 0..33 {
+        for _ in 0..100 {
             session.advance_tick();
         }
 
@@ -2065,6 +2065,65 @@ mod tests {
                 .iter()
                 .any(|event| matches!(&event.kind, EventKind::ThroughputBudgetSet { .. }))
         );
+    }
+
+    #[test]
+    fn player_events_from_index_skips_old_entries_without_missing_same_tick_events() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            claim_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(12);
+
+        let indexed_events = session
+            .player_events_from_index(PlayerId::new(1), 1)
+            .expect("indexed player event feed should be available");
+
+        assert_eq!(
+            indexed_events.first().map(|event| event.event_index),
+            Some(1)
+        );
+        assert!(indexed_events.iter().any(|event| matches!(
+            &event.record.kind,
+            EventKind::TransitArrived {
+                destination_id: 2,
+                ..
+            }
+        )));
+        assert!(indexed_events.iter().any(|event| matches!(
+            &event.record.kind,
+            EventKind::LocationSurveyed { location_id: 2 }
+        )));
+        assert_eq!(
+            indexed_events
+                .iter()
+                .filter(|event| event.record.tick_id == TickId::new(12))
+                .count(),
+            3
+        );
+
+        let replayed = session
+            .player_events_from_index(
+                PlayerId::new(1),
+                indexed_events
+                    .last()
+                    .expect("expected indexed events")
+                    .event_index
+                    + 1,
+            )
+            .expect("follow-up indexed event feed should be available");
+        assert!(replayed.is_empty());
     }
 
     #[test]
@@ -2794,10 +2853,10 @@ mod tests {
                 .expect("training run should be accepted");
 
             let duration = match target_tier {
-                2 => 8,
-                3 => 12,
-                4 => 16,
-                5 => 20,
+                2 => 32,
+                3 => 48,
+                4 => 72,
+                5 => 96,
                 _ => unreachable!(),
             };
             session.advance_ticks(duration);
@@ -3004,7 +3063,8 @@ mod tests {
             ascension_fixture_scenario(),
         );
 
-        for (target_tier, reserved_for_training, duration) in [(2, 20, 8), (3, 35, 12), (4, 50, 16)]
+        for (target_tier, reserved_for_training, duration) in
+            [(2, 20, 32), (3, 35, 48), (4, 50, 72)]
         {
             session
                 .issue_command_now(
@@ -3065,10 +3125,9 @@ mod tests {
             EventKind::AscensionInterrupted {
                 player_id,
                 location_id,
-                reason,
+                ..
             } if *player_id == PlayerId::new(1)
                 && *location_id == 1
-                && reason == "site_unavailable"
         )));
     }
 

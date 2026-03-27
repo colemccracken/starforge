@@ -1,3 +1,5 @@
+pub mod live;
+
 use std::{
     collections::BTreeMap,
     fmt,
@@ -8,7 +10,7 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -21,6 +23,13 @@ use starforge_core::{
 };
 use starforge_taxonomy::{TaxonomyDocument, TaxonomyError, build_taxonomy_document};
 
+pub use live::{
+    CreateSessionRequest, JoinSessionRequest, KnownRouteView, LiveSessionSummary, PlayerAlert,
+    PlayerAlertKind, PlayerCommandRequest, PlayerFrameQuery, PlayerFrameResponse, PlayerSeat,
+    ReadySessionRequest, RunnerSpeedRequest, RunnerStatus, SessionInfoResponse, SessionMode,
+    SessionPhase, SessionRegistry,
+};
+
 const TAXONOMY_HTML_TEMPLATE: &str = include_str!("../assets/taxonomy.html");
 const TAXONOMY_CSS: &str = include_str!("../assets/taxonomy.css");
 const TAXONOMY_JS: &str = include_str!("../assets/taxonomy.js");
@@ -31,6 +40,7 @@ pub struct ApiServerConfig {
     pub bind_address: String,
     pub ruleset_path: PathBuf,
     pub scenario_path: PathBuf,
+    pub live_store_path: PathBuf,
 }
 
 impl Default for ApiServerConfig {
@@ -39,6 +49,7 @@ impl Default for ApiServerConfig {
             bind_address: "127.0.0.1:8080".to_owned(),
             ruleset_path: default_ruleset_path(),
             scenario_path: default_scenario_path(),
+            live_store_path: default_live_store_path(),
         }
     }
 }
@@ -114,10 +125,10 @@ pub struct PlayerEventsQuery {
     pub from_tick: u64,
 }
 
-#[derive(Debug)]
 struct ApiState {
     config: ApiServerConfig,
     sessions: Mutex<SessionStore>,
+    registry: SessionRegistry,
 }
 
 #[derive(Debug)]
@@ -153,10 +164,14 @@ impl ManagedSession {
 #[derive(Debug)]
 pub enum ApiBootstrapError {
     Content(ContentError),
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    Live(live::LiveSessionError),
 }
 
 #[derive(Debug)]
 pub enum ApiServerError {
+    Bootstrap(ApiBootstrapError),
     Io(std::io::Error),
 }
 
@@ -168,6 +183,7 @@ enum ApiRouteError {
     Snapshot(serde_json::Error),
     SessionNotFound(SessionId),
     LockPoisoned,
+    Live(live::LiveSessionError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -180,6 +196,9 @@ impl fmt::Display for ApiBootstrapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Content(error) => write!(f, "{error}"),
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Json(error) => write!(f, "{error}"),
+            Self::Live(error) => write!(f, "{error}"),
         }
     }
 }
@@ -187,6 +206,7 @@ impl fmt::Display for ApiBootstrapError {
 impl fmt::Display for ApiServerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Bootstrap(error) => write!(f, "failed to bootstrap api server: {error}"),
             Self::Io(error) => write!(f, "failed to start api server: {error}"),
         }
     }
@@ -203,6 +223,7 @@ impl fmt::Display for ApiRouteError {
                 write!(f, "session {} was not found", session_id.0)
             }
             Self::LockPoisoned => write!(f, "session store lock was poisoned"),
+            Self::Live(error) => write!(f, "{error}"),
         }
     }
 }
@@ -214,6 +235,24 @@ impl std::error::Error for ApiRouteError {}
 impl From<ContentError> for ApiBootstrapError {
     fn from(error: ContentError) -> Self {
         Self::Content(error)
+    }
+}
+
+impl From<std::io::Error> for ApiBootstrapError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<serde_json::Error> for ApiBootstrapError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+impl From<live::LiveSessionError> for ApiBootstrapError {
+    fn from(error: live::LiveSessionError) -> Self {
+        Self::Live(error)
     }
 }
 
@@ -238,6 +277,12 @@ impl From<ValidationError> for ApiRouteError {
 impl From<serde_json::Error> for ApiRouteError {
     fn from(error: serde_json::Error) -> Self {
         Self::Snapshot(error)
+    }
+}
+
+impl From<live::LiveSessionError> for ApiRouteError {
+    fn from(error: live::LiveSessionError) -> Self {
+        Self::Live(error)
     }
 }
 
@@ -270,6 +315,41 @@ impl IntoResponse for ApiRouteError {
                 "lock_poisoned".to_owned(),
                 "session store lock was poisoned".to_owned(),
             ),
+            Self::Live(error) => match error {
+                live::LiveSessionError::NotFound(message) => (
+                    StatusCode::NOT_FOUND,
+                    "live_session_not_found".to_owned(),
+                    message,
+                ),
+                live::LiveSessionError::Conflict(message) => (
+                    StatusCode::CONFLICT,
+                    "live_session_conflict".to_owned(),
+                    message,
+                ),
+                live::LiveSessionError::Invalid(message) => (
+                    StatusCode::BAD_REQUEST,
+                    "live_session_invalid".to_owned(),
+                    message,
+                ),
+                live::LiveSessionError::Io(error) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "live_session_io".to_owned(),
+                    error.to_string(),
+                ),
+                live::LiveSessionError::Json(error) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "live_session_json".to_owned(),
+                    error.to_string(),
+                ),
+                live::LiveSessionError::Content(error) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "live_session_content".to_owned(),
+                    error.to_string(),
+                ),
+                live::LiveSessionError::Validation(error) => {
+                    (StatusCode::BAD_REQUEST, error.code, error.message)
+                }
+            },
         };
 
         (status, Json(ApiErrorBody { error, message })).into_response()
@@ -282,6 +362,7 @@ pub fn planned_routes() -> &'static [&'static str] {
         "GET /taxonomy",
         "GET /taxonomy.json",
         "POST /sessions",
+        "POST /sessions/load",
         "GET /sessions/{id}",
         "POST /sessions/{id}/run",
         "POST /sessions/{id}/pause",
@@ -290,40 +371,61 @@ pub fn planned_routes() -> &'static [&'static str] {
         "GET /sessions/{id}/state",
         "GET /sessions/{id}/events",
         "POST /sessions/{id}/save",
-        "POST /sessions/load",
         "GET /sessions/{id}/metrics",
+        "POST /live/sessions",
+        "GET /live/sessions/{id}",
+        "POST /live/sessions/{id}/join",
+        "POST /live/sessions/{id}/ready",
+        "POST /live/sessions/{id}/commands",
+        "POST /live/sessions/{id}/run",
+        "POST /live/sessions/{id}/pause",
+        "POST /live/sessions/{id}/speed",
+        "GET /live/sessions/{id}/frame",
     ]
 }
 
-pub fn app_router(config: ApiServerConfig) -> Router {
+pub async fn app_router(config: ApiServerConfig) -> Result<Router, ApiBootstrapError> {
     let state = Arc::new(ApiState {
-        config,
+        registry: SessionRegistry::load(config.clone())?,
         sessions: Mutex::new(SessionStore::default()),
+        config,
     });
 
-    Router::new()
+    Ok(Router::new()
         .route("/", get(root))
         .route("/taxonomy", get(taxonomy_html))
         .route("/taxonomy.json", get(taxonomy_json))
-        .route("/sessions", post(create_session))
-        .route("/sessions/load", post(load_session))
-        .route("/sessions/{id}", get(get_session))
-        .route("/sessions/{id}/run", post(run_session))
-        .route("/sessions/{id}/pause", post(pause_session))
-        .route("/sessions/{id}/step", post(step_session))
-        .route("/sessions/{id}/commands", post(issue_command))
-        .route("/sessions/{id}/state", get(get_player_state))
-        .route("/sessions/{id}/events", get(get_player_events))
-        .route("/sessions/{id}/save", post(save_session))
-        .route("/sessions/{id}/metrics", get(get_session_metrics))
-        .with_state(state)
+        .route("/sessions", post(create_local_session))
+        .route("/sessions/load", post(load_local_session))
+        .route("/sessions/{id}", get(get_local_session))
+        .route("/sessions/{id}/run", post(run_local_session))
+        .route("/sessions/{id}/pause", post(pause_local_session))
+        .route("/sessions/{id}/step", post(step_local_session))
+        .route("/sessions/{id}/commands", post(issue_local_command))
+        .route("/sessions/{id}/state", get(get_local_player_state))
+        .route("/sessions/{id}/events", get(get_local_player_events))
+        .route("/sessions/{id}/save", post(save_local_session))
+        .route("/sessions/{id}/metrics", get(get_local_session_metrics))
+        .route("/live/sessions", post(create_live_session))
+        .route("/live/sessions/{id}", get(get_live_session))
+        .route("/live/sessions/{id}/join", post(join_live_session))
+        .route("/live/sessions/{id}/ready", post(set_live_ready))
+        .route("/live/sessions/{id}/commands", post(issue_live_command))
+        .route("/live/sessions/{id}/run", post(run_live_session))
+        .route("/live/sessions/{id}/pause", post(pause_live_session))
+        .route("/live/sessions/{id}/speed", post(set_live_speed))
+        .route("/live/sessions/{id}/frame", get(player_live_frame))
+        .with_state(state))
 }
 
 pub async fn run_server(config: ApiServerConfig) -> Result<(), ApiServerError> {
+    let router = app_router(config.clone())
+        .await
+        .map_err(ApiServerError::Bootstrap)?;
     let listener = tokio::net::TcpListener::bind(&config.bind_address)
         .await
         .map_err(ApiServerError::Io)?;
-    axum::serve(listener, app_router(config))
+    axum::serve(listener, router)
         .await
         .map_err(ApiServerError::Io)
 }
@@ -360,6 +462,10 @@ fn default_ruleset_path() -> PathBuf {
 
 fn default_scenario_path() -> PathBuf {
     workspace_root().join("scenarios/two_player_skirmish.example.yaml")
+}
+
+fn default_live_store_path() -> PathBuf {
+    workspace_root().join(".starforge/live")
 }
 
 fn workspace_root() -> PathBuf {
@@ -404,16 +510,6 @@ fn lock_sessions(state: &ApiState) -> Result<MutexGuard<'_, SessionStore>, ApiRo
         .map_err(|_| ApiRouteError::LockPoisoned)
 }
 
-fn bootstrap_session(config: &ApiServerConfig) -> Result<GameSession, ApiRouteError> {
-    let compiled = load_compiled_scenario(&config.ruleset_path, &config.scenario_path)
-        .map_err(ApiBootstrapError::from)?;
-    Ok(GameSession::new(
-        SessionId::default(),
-        compiled.game_config,
-        compiled.scenario_config,
-    ))
-}
-
 async fn root() -> Redirect {
     Redirect::temporary("/taxonomy")
 }
@@ -430,26 +526,29 @@ async fn taxonomy_json(
     Ok(Json(document))
 }
 
-async fn create_session(
+async fn create_local_session(
     State(state): State<Arc<ApiState>>,
 ) -> Result<(StatusCode, Json<ApiSessionSummary>), ApiRouteError> {
-    let mut session = bootstrap_session(&state.config)?;
     let mut sessions = lock_sessions(&state)?;
     let session_id = SessionId::new(sessions.next_session_id.max(1));
     sessions.next_session_id = session_id.0 + 1;
-    session = GameSession::new(
+    let summary = load_session_summary(
         session_id,
-        session.config().clone(),
-        session.scenario().clone(),
-    );
-    let session = ManagedSession::new(session);
-    let summary = api_session_summary(&session);
+        &state.config.ruleset_path,
+        &state.config.scenario_path,
+    )?;
+    let session = ManagedSession::new(GameSession::new(
+        session_id,
+        summary.config,
+        summary.scenario,
+    ));
+    let api_summary = api_session_summary(&session);
     sessions.sessions.insert(session_id, session);
-    Ok((StatusCode::CREATED, Json(summary)))
+    Ok((StatusCode::CREATED, Json(api_summary)))
 }
 
-async fn get_session(
-    Path(id): Path<u64>,
+async fn get_local_session(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
 ) -> Result<Json<ApiSessionSummary>, ApiRouteError> {
     let sessions = lock_sessions(&state)?;
@@ -461,8 +560,8 @@ async fn get_session(
     Ok(Json(api_session_summary(session)))
 }
 
-async fn run_session(
-    Path(id): Path<u64>,
+async fn run_local_session(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
 ) -> Result<Json<ApiSessionSummary>, ApiRouteError> {
     let session_id = SessionId::new(id);
@@ -490,8 +589,8 @@ async fn run_session(
     Ok(Json(summary))
 }
 
-async fn pause_session(
-    Path(id): Path<u64>,
+async fn pause_local_session(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
 ) -> Result<Json<ApiSessionSummary>, ApiRouteError> {
     let mut sessions = lock_sessions(&state)?;
@@ -504,8 +603,8 @@ async fn pause_session(
     Ok(Json(api_session_summary(session)))
 }
 
-async fn step_session(
-    Path(id): Path<u64>,
+async fn step_local_session(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
     Json(request): Json<StepSessionRequest>,
 ) -> Result<Json<ApiSessionSummary>, ApiRouteError> {
@@ -522,8 +621,8 @@ async fn step_session(
     Ok(Json(api_session_summary(session)))
 }
 
-async fn issue_command(
-    Path(id): Path<u64>,
+async fn issue_local_command(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
     Json(request): Json<IssueCommandRequest>,
 ) -> Result<Json<ApiSessionSummary>, ApiRouteError> {
@@ -539,8 +638,8 @@ async fn issue_command(
     Ok(Json(api_session_summary(session)))
 }
 
-async fn get_player_state(
-    Path(id): Path<u64>,
+async fn get_local_player_state(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
     Query(query): Query<PlayerScopedQuery>,
 ) -> Result<Json<PlayerStateView>, ApiRouteError> {
@@ -555,8 +654,8 @@ async fn get_player_state(
     ))
 }
 
-async fn get_player_events(
-    Path(id): Path<u64>,
+async fn get_local_player_events(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
     Query(query): Query<PlayerEventsQuery>,
 ) -> Result<Json<Vec<EventRecord>>, ApiRouteError> {
@@ -572,8 +671,8 @@ async fn get_player_events(
     )?))
 }
 
-async fn save_session(
-    Path(id): Path<u64>,
+async fn save_local_session(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
 ) -> Result<Json<SaveSessionResponse>, ApiRouteError> {
     let sessions = lock_sessions(&state)?;
@@ -587,7 +686,7 @@ async fn save_session(
     }))
 }
 
-async fn load_session(
+async fn load_local_session(
     State(state): State<Arc<ApiState>>,
     Json(request): Json<LoadSessionRequest>,
 ) -> Result<(StatusCode, Json<ApiSessionSummary>), ApiRouteError> {
@@ -601,8 +700,8 @@ async fn load_session(
     Ok((StatusCode::CREATED, Json(summary)))
 }
 
-async fn get_session_metrics(
-    Path(id): Path<u64>,
+async fn get_local_session_metrics(
+    AxumPath(id): AxumPath<u64>,
     State(state): State<Arc<ApiState>>,
 ) -> Result<Json<SessionMetrics>, ApiRouteError> {
     let sessions = lock_sessions(&state)?;
@@ -644,6 +743,125 @@ async fn run_session_loop(state: Arc<ApiState>, session_id: SessionId) {
     }
 }
 
+async fn create_live_session(
+    State(state): State<Arc<ApiState>>,
+    Json(request): Json<CreateSessionRequest>,
+) -> Result<(StatusCode, Json<SessionInfoResponse>), ApiRouteError> {
+    Ok((
+        StatusCode::CREATED,
+        Json(state.registry.create_session(request).await?),
+    ))
+}
+
+async fn get_live_session(
+    AxumPath(session_id): AxumPath<u64>,
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<SessionInfoResponse>, ApiRouteError> {
+    Ok(Json(
+        state
+            .registry
+            .session_info(SessionId::new(session_id))
+            .await?,
+    ))
+}
+
+async fn join_live_session(
+    AxumPath(session_id): AxumPath<u64>,
+    State(state): State<Arc<ApiState>>,
+    Json(request): Json<JoinSessionRequest>,
+) -> Result<Json<SessionInfoResponse>, ApiRouteError> {
+    Ok(Json(
+        state
+            .registry
+            .join_session(SessionId::new(session_id), request.player_id)
+            .await?,
+    ))
+}
+
+async fn set_live_ready(
+    AxumPath(session_id): AxumPath<u64>,
+    State(state): State<Arc<ApiState>>,
+    Json(request): Json<ReadySessionRequest>,
+) -> Result<Json<SessionInfoResponse>, ApiRouteError> {
+    Ok(Json(
+        state
+            .registry
+            .set_ready(SessionId::new(session_id), request.player_id, request.ready)
+            .await?,
+    ))
+}
+
+async fn issue_live_command(
+    AxumPath(session_id): AxumPath<u64>,
+    State(state): State<Arc<ApiState>>,
+    Json(request): Json<PlayerCommandRequest>,
+) -> Result<Json<SessionInfoResponse>, ApiRouteError> {
+    Ok(Json(
+        state
+            .registry
+            .issue_command(
+                SessionId::new(session_id),
+                request.player_id,
+                request.command,
+            )
+            .await?,
+    ))
+}
+
+async fn run_live_session(
+    AxumPath(session_id): AxumPath<u64>,
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<SessionInfoResponse>, ApiRouteError> {
+    Ok(Json(
+        state
+            .registry
+            .run_session(SessionId::new(session_id))
+            .await?,
+    ))
+}
+
+async fn pause_live_session(
+    AxumPath(session_id): AxumPath<u64>,
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<SessionInfoResponse>, ApiRouteError> {
+    Ok(Json(
+        state
+            .registry
+            .pause_session(SessionId::new(session_id))
+            .await?,
+    ))
+}
+
+async fn set_live_speed(
+    AxumPath(session_id): AxumPath<u64>,
+    State(state): State<Arc<ApiState>>,
+    Json(request): Json<RunnerSpeedRequest>,
+) -> Result<Json<SessionInfoResponse>, ApiRouteError> {
+    Ok(Json(
+        state
+            .registry
+            .set_speed(SessionId::new(session_id), request.tick_interval_ms)
+            .await?,
+    ))
+}
+
+async fn player_live_frame(
+    AxumPath(session_id): AxumPath<u64>,
+    Query(query): Query<PlayerFrameQuery>,
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<PlayerFrameResponse>, ApiRouteError> {
+    Ok(Json(
+        state
+            .registry
+            .player_frame(
+                SessionId::new(session_id),
+                query.player_id,
+                query.from_event_index,
+            )
+            .await?,
+    ))
+}
+
 fn render_taxonomy_html() -> String {
     TAXONOMY_HTML_TEMPLATE
         .replace("/*__TAXONOMY_CSS__*/", TAXONOMY_CSS)
@@ -652,25 +870,63 @@ fn render_taxonomy_html() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{path::Path, time::Duration};
 
-    use axum::Router;
     use axum::{
+        Router,
         body::{Body, to_bytes},
         http::{Method, Request, StatusCode},
     };
-    use serde::Serialize;
-    use serde::de::DeserializeOwned;
+    use serde::{Serialize, de::DeserializeOwned};
     use tower::util::ServiceExt;
 
-    use super::{
-        ApiBootstrapError, ApiServerConfig, ApiSessionSummary, LoadSessionRequest,
-        SaveSessionResponse, SessionControlState, SessionMetrics, StepSessionRequest, app_router,
-        load_session_summary, starter_session_summary,
+    use crate::live::{
+        CreateSessionRequest, JoinSessionRequest, PlayerCommandRequest, PlayerFrameResponse,
+        ReadySessionRequest, RunnerSpeedRequest, SessionInfoResponse,
     };
     use starforge_content::ContentError;
-    use starforge_core::{EventKind, EventRecord, PlayerStateView, TickId};
+    use starforge_core::{CommandKind, EventKind, EventRecord, PlayerId, PlayerStateView, TickId};
     use starforge_taxonomy::TaxonomyDocument;
+
+    use super::{
+        ApiBootstrapError, ApiServerConfig, ApiSessionSummary, IssueCommandRequest,
+        LoadSessionRequest, SaveSessionResponse, SessionControlState, SessionMetrics, SessionMode,
+        SessionRegistry, StepSessionRequest, app_router, load_session_summary,
+        starter_session_summary,
+    };
+
+    fn test_config(temp_path: &Path) -> ApiServerConfig {
+        ApiServerConfig {
+            live_store_path: temp_path.join("live-store"),
+            ..ApiServerConfig::default()
+        }
+    }
+
+    fn request(method: Method, uri: &str, body: Body) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(body)
+            .expect("request should build")
+    }
+
+    fn json_body<T: Serialize>(value: &T) -> Body {
+        Body::from(serde_json::to_vec(value).expect("json body should serialize"))
+    }
+
+    async fn response_json<T: DeserializeOwned>(
+        app: Router,
+        request: Request<Body>,
+        expected_status: StatusCode,
+    ) -> T {
+        let response = app.oneshot(request).await.expect("router should respond");
+        assert_eq!(response.status(), expected_status);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        serde_json::from_slice(&body).expect("response json should deserialize")
+    }
 
     #[test]
     fn starter_summary_uses_compiled_repo_scenario() {
@@ -699,13 +955,11 @@ mod tests {
 
     #[tokio::test]
     async fn taxonomy_json_route_returns_built_document() {
-        let response = app_router(ApiServerConfig::default())
-            .oneshot(
-                Request::builder()
-                    .uri("/taxonomy.json")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let response = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build")
+            .oneshot(request(Method::GET, "/taxonomy.json", Body::empty()))
             .await
             .expect("router should respond");
 
@@ -721,13 +975,11 @@ mod tests {
 
     #[tokio::test]
     async fn taxonomy_html_route_returns_shell() {
-        let response = app_router(ApiServerConfig::default())
-            .oneshot(
-                Request::builder()
-                    .uri("/taxonomy")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let response = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build")
+            .oneshot(request(Method::GET, "/taxonomy", Body::empty()))
             .await
             .expect("router should respond");
 
@@ -736,7 +988,6 @@ mod tests {
             .await
             .expect("response body should read");
         let html = String::from_utf8(body.to_vec()).expect("html should be utf-8");
-
         assert!(html.contains("<title>Starforge Taxonomy</title>"));
         assert!(html.contains("fetch(\"/taxonomy.json\""));
         assert!(html.contains("id=\"entryList\""));
@@ -744,7 +995,10 @@ mod tests {
 
     #[tokio::test]
     async fn session_routes_create_and_fetch_summary() {
-        let app = app_router(ApiServerConfig::default());
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let app = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build");
 
         let created: ApiSessionSummary = response_json(
             app.clone(),
@@ -752,23 +1006,24 @@ mod tests {
             StatusCode::CREATED,
         )
         .await;
-
         assert_eq!(created.session_id, starforge_core::SessionId::new(1));
         assert_eq!(created.scenario_name, "two_player_skirmish");
 
         let fetched: ApiSessionSummary = response_json(
-            app.clone(),
+            app,
             request(Method::GET, "/sessions/1", Body::empty()),
             StatusCode::OK,
         )
         .await;
-
         assert_eq!(fetched, created);
     }
 
     #[tokio::test]
     async fn run_and_pause_routes_control_background_advancement() {
-        let app = app_router(ApiServerConfig::default());
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let app = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build");
 
         let _: ApiSessionSummary = response_json(
             app.clone(),
@@ -819,7 +1074,11 @@ mod tests {
 
     #[tokio::test]
     async fn session_commands_and_state_flow_through_api() {
-        let app = app_router(ApiServerConfig::default());
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let app = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build");
+
         let _: ApiSessionSummary = response_json(
             app.clone(),
             request(Method::POST, "/sessions", Body::empty()),
@@ -827,35 +1086,35 @@ mod tests {
         )
         .await;
 
-        let budget_body = json_body(&serde_json::json!({
-            "player_id": 1,
-            "command": {
-                "SetThroughputBudget": {
-                    "reserved_for_model_upkeep": 0,
-                    "reserved_for_research": 0,
-                    "reserved_for_training": 20,
-                    "reserved_for_agents": 0
-                }
-            }
-        }));
         let _: ApiSessionSummary = response_json(
             app.clone(),
-            request(Method::POST, "/sessions/1/commands", budget_body),
+            request(
+                Method::POST,
+                "/sessions/1/commands",
+                json_body(&IssueCommandRequest {
+                    player_id: 1,
+                    command: CommandKind::SetThroughputBudget {
+                        reserved_for_model_upkeep: 0,
+                        reserved_for_research: 0,
+                        reserved_for_training: 20,
+                        reserved_for_agents: 0,
+                    },
+                }),
+            ),
             StatusCode::OK,
         )
         .await;
 
-        let train_body = json_body(&serde_json::json!({
-            "player_id": 1,
-            "command": {
-                "StartTrainingRun": {
-                    "target_tier": 2
-                }
-            }
-        }));
         let _: ApiSessionSummary = response_json(
             app.clone(),
-            request(Method::POST, "/sessions/1/commands", train_body),
+            request(
+                Method::POST,
+                "/sessions/1/commands",
+                json_body(&IssueCommandRequest {
+                    player_id: 1,
+                    command: CommandKind::StartTrainingRun { target_tier: 2 },
+                }),
+            ),
             StatusCode::OK,
         )
         .await;
@@ -865,7 +1124,7 @@ mod tests {
             request(
                 Method::POST,
                 "/sessions/1/step",
-                json_body(&StepSessionRequest { ticks: 8 }),
+                json_body(&StepSessionRequest { ticks: 32 }),
             ),
             StatusCode::OK,
         )
@@ -881,7 +1140,7 @@ mod tests {
         assert!(player_state.training.is_none());
 
         let events: Vec<EventRecord> = response_json(
-            app.clone(),
+            app,
             request(
                 Method::GET,
                 "/sessions/1/events?player_id=1&from_tick=0",
@@ -902,7 +1161,11 @@ mod tests {
 
     #[tokio::test]
     async fn save_load_and_metrics_routes_round_trip_sessions() {
-        let app = app_router(ApiServerConfig::default());
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let app = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build");
+
         let _: ApiSessionSummary = response_json(
             app.clone(),
             request(Method::POST, "/sessions", Body::empty()),
@@ -956,13 +1219,11 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_session_returns_not_found_json() {
-        let response = app_router(ApiServerConfig::default())
-            .oneshot(
-                Request::builder()
-                    .uri("/sessions/999")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let response = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build")
+            .oneshot(request(Method::GET, "/sessions/999", Body::empty()))
             .await
             .expect("router should respond");
 
@@ -975,29 +1236,437 @@ mod tests {
         assert_eq!(payload["error"], "session_not_found");
     }
 
-    fn request(method: Method, uri: &str, body: Body) -> Request<Body> {
-        Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("content-type", "application/json")
-            .body(body)
-            .expect("request should build")
-    }
-
-    fn json_body<T: Serialize>(value: &T) -> Body {
-        Body::from(serde_json::to_vec(value).expect("json body should serialize"))
-    }
-
-    async fn response_json<T: DeserializeOwned>(
-        app: Router,
-        request: Request<Body>,
-        expected_status: StatusCode,
-    ) -> T {
-        let response = app.oneshot(request).await.expect("router should respond");
-        assert_eq!(response.status(), expected_status);
-        let body = to_bytes(response.into_body(), usize::MAX)
+    #[tokio::test]
+    async fn create_join_ready_auto_starts_competitive_session() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let router = app_router(test_config(temp.path()))
             .await
-            .expect("response body should read");
-        serde_json::from_slice(&body).expect("response json should deserialize")
+            .expect("router should build");
+
+        let created: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                "/live/sessions",
+                json_body(&CreateSessionRequest {
+                    mode: SessionMode::Competitive,
+                    claimed_player_id: Some(PlayerId::new(1)),
+                }),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+        assert_eq!(created.runner.phase, super::SessionPhase::Lobby);
+        assert!(created.runner.paused);
+
+        let _: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/join", created.session_id.0),
+                json_body(&JoinSessionRequest {
+                    player_id: PlayerId::new(2),
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+
+        let ready_one: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/ready", created.session_id.0),
+                json_body(&ReadySessionRequest {
+                    player_id: PlayerId::new(1),
+                    ready: true,
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(ready_one.runner.phase, super::SessionPhase::Lobby);
+
+        let ready_two: SessionInfoResponse = response_json(
+            router,
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/ready", created.session_id.0),
+                json_body(&ReadySessionRequest {
+                    player_id: PlayerId::new(2),
+                    ready: true,
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(ready_two.runner.phase, super::SessionPhase::Running);
+        assert!(!ready_two.runner.paused);
+    }
+
+    #[tokio::test]
+    async fn lobby_rejects_claiming_an_already_claimed_seat() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let router = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build");
+
+        let created: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                "/live/sessions",
+                json_body(&CreateSessionRequest {
+                    mode: SessionMode::Competitive,
+                    claimed_player_id: Some(PlayerId::new(1)),
+                }),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        let response = router
+            .oneshot(request(
+                Method::POST,
+                &format!("/live/sessions/{}/join", created.session_id.0),
+                json_body(&JoinSessionRequest {
+                    player_id: PlayerId::new(1),
+                }),
+            ))
+            .await
+            .expect("join should respond");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn competitive_sessions_reject_pause_and_speed_after_start() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let router = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build");
+
+        let created: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                "/live/sessions",
+                json_body(&CreateSessionRequest {
+                    mode: SessionMode::Competitive,
+                    claimed_player_id: Some(PlayerId::new(1)),
+                }),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        let _: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/join", created.session_id.0),
+                json_body(&JoinSessionRequest {
+                    player_id: PlayerId::new(2),
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        let _: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/ready", created.session_id.0),
+                json_body(&ReadySessionRequest {
+                    player_id: PlayerId::new(1),
+                    ready: true,
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        let _: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/ready", created.session_id.0),
+                json_body(&ReadySessionRequest {
+                    player_id: PlayerId::new(2),
+                    ready: true,
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+
+        let pause_response = router
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("/live/sessions/{}/pause", created.session_id.0),
+                Body::empty(),
+            ))
+            .await
+            .expect("pause should respond");
+        assert_eq!(pause_response.status(), StatusCode::CONFLICT);
+
+        let speed_response = router
+            .oneshot(request(
+                Method::POST,
+                &format!("/live/sessions/{}/speed", created.session_id.0),
+                json_body(&RunnerSpeedRequest {
+                    tick_interval_ms: 125,
+                }),
+            ))
+            .await
+            .expect("speed should respond");
+        assert_eq!(speed_response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn sandbox_sessions_accept_run_pause_and_speed_changes() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let router = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build");
+
+        let created: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                "/live/sessions",
+                json_body(&CreateSessionRequest {
+                    mode: SessionMode::Sandbox,
+                    claimed_player_id: Some(PlayerId::new(1)),
+                }),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        let speed_response: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/speed", created.session_id.0),
+                json_body(&RunnerSpeedRequest {
+                    tick_interval_ms: 125,
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(speed_response.runner.tick_interval_ms, 125);
+
+        let run_response: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/run", created.session_id.0),
+                Body::empty(),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(run_response.runner.phase, super::SessionPhase::Running);
+        assert!(!run_response.runner.paused);
+
+        let pause_response: SessionInfoResponse = response_json(
+            router,
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/pause", created.session_id.0),
+                Body::empty(),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(pause_response.runner.paused);
+    }
+
+    #[tokio::test]
+    async fn persisted_snapshot_and_meta_restore_runner_state() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let config = test_config(temp.path());
+        let registry = SessionRegistry::load(config.clone()).expect("registry should load");
+
+        let created = registry
+            .create_session(CreateSessionRequest {
+                mode: SessionMode::Sandbox,
+                claimed_player_id: Some(PlayerId::new(1)),
+            })
+            .await
+            .expect("session should create");
+        registry
+            .set_speed(created.session_id, 125)
+            .await
+            .expect("speed should update");
+        registry
+            .run_session(created.session_id)
+            .await
+            .expect("sandbox session should start");
+        registry
+            .issue_command(
+                created.session_id,
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 17,
+                },
+            )
+            .await
+            .expect("command should apply");
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(275)).await;
+        let before = registry
+            .session_info(created.session_id)
+            .await
+            .expect("session should exist");
+
+        let restored = SessionRegistry::load(config)
+            .expect("restored registry should load")
+            .session_info(created.session_id)
+            .await
+            .expect("restored session should exist");
+
+        assert_eq!(restored.state_hash, before.state_hash);
+        assert_eq!(restored.summary.current_tick, before.summary.current_tick);
+        assert_eq!(restored.runner.phase, before.runner.phase);
+        assert_eq!(restored.seats, before.seats);
+    }
+
+    #[tokio::test]
+    async fn live_frame_reports_arrival_alerts_with_monotonic_event_cursor() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let router = app_router(test_config(temp.path()))
+            .await
+            .expect("router should build");
+
+        let created: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                "/live/sessions",
+                json_body(&CreateSessionRequest {
+                    mode: SessionMode::Competitive,
+                    claimed_player_id: Some(PlayerId::new(1)),
+                }),
+            ),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        let _: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/join", created.session_id.0),
+                json_body(&JoinSessionRequest {
+                    player_id: PlayerId::new(2),
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        let _: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/ready", created.session_id.0),
+                json_body(&ReadySessionRequest {
+                    player_id: PlayerId::new(1),
+                    ready: true,
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        let _: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/ready", created.session_id.0),
+                json_body(&ReadySessionRequest {
+                    player_id: PlayerId::new(2),
+                    ready: true,
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+
+        let _: SessionInfoResponse = response_json(
+            router.clone(),
+            request(
+                Method::POST,
+                &format!("/live/sessions/{}/commands", created.session_id.0),
+                json_body(&PlayerCommandRequest {
+                    player_id: PlayerId::new(1),
+                    command: CommandKind::DispatchSurveyTransit {
+                        origin_location_id: 1,
+                        destination_location_id: 17,
+                    },
+                }),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(20);
+        let frame = loop {
+            let frame: PlayerFrameResponse = response_json(
+                router.clone(),
+                request(
+                    Method::GET,
+                    &format!(
+                        "/live/sessions/{}/frame?player_id=1&from_event_index=0",
+                        created.session_id.0
+                    ),
+                    Body::empty(),
+                ),
+                StatusCode::OK,
+            )
+            .await;
+
+            let saw_arrival = frame.alerts.iter().any(|alert| {
+                alert.kind == super::live::PlayerAlertKind::Arrival && alert.location_id == Some(17)
+            });
+            let saw_survey = frame.alerts.iter().any(|alert| {
+                alert.kind == super::live::PlayerAlertKind::Survey && alert.location_id == Some(17)
+            });
+            if saw_arrival && saw_survey {
+                break frame;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for arrival+survey alerts; last alerts: {:?}",
+                frame.alerts
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+        };
+
+        assert!(frame.next_event_index >= frame.events.len());
+        assert!(frame.alerts.iter().any(|alert| {
+            alert.kind == super::live::PlayerAlertKind::Arrival && alert.location_id == Some(17)
+        }));
+        assert!(frame.alerts.iter().any(|alert| {
+            alert.kind == super::live::PlayerAlertKind::Survey && alert.location_id == Some(17)
+        }));
+
+        let follow_up: PlayerFrameResponse = response_json(
+            router,
+            request(
+                Method::GET,
+                &format!(
+                    "/live/sessions/{}/frame?player_id=1&from_event_index={}",
+                    created.session_id.0, frame.next_event_index
+                ),
+                Body::empty(),
+            ),
+            StatusCode::OK,
+        )
+        .await;
+        assert!(follow_up.events.is_empty());
+        assert_eq!(follow_up.next_event_index, frame.next_event_index);
     }
 }

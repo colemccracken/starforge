@@ -7,6 +7,12 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedEventRecord {
+    pub event_index: usize,
+    pub record: EventRecord,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventRecord {
     pub tick_id: TickId,
     pub player_id: Option<PlayerId>,

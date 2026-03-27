@@ -2,11 +2,12 @@ use std::collections::BTreeSet;
 
 use crate::{
     BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, EventRecord,
-    GameConfig, GameState, InfrastructureCondition, InfrastructureKind, InfrastructureProjectKind,
-    InfrastructureProjectState, LocationConnection, LocationKind, LocationState, LocationView,
-    LocationVisibility, PlayerId, PlayerStateView, RelayStatus, ReplayLog, ResearchBranch,
-    ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, Snapshot, StrategicPosition,
-    TerritoryState, TickId, TransitKind, TransitState, TransitView, ValidationError,
+    GameConfig, GameState, IndexedEventRecord, InfrastructureCondition, InfrastructureKind,
+    InfrastructureProjectKind, InfrastructureProjectState, LocationConnection, LocationKind,
+    LocationState, LocationView, LocationVisibility, PlayerId, PlayerStateView, RelayStatus,
+    ReplayLog, ResearchBranch, ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId,
+    Snapshot, StrategicPosition, TerritoryState, TickId, TransitKind, TransitState, TransitView,
+    ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -425,6 +426,26 @@ impl GameSession {
             .filter(|event| event.tick_id >= from_tick)
             .filter(|event| self.event_visible_to_player(player_id, event))
             .cloned()
+            .collect())
+    }
+
+    pub fn player_events_from_index(
+        &self,
+        player_id: PlayerId,
+        from_event_index: usize,
+    ) -> Result<Vec<IndexedEventRecord>, ValidationError> {
+        self.player_state(player_id)?;
+
+        Ok(self
+            .event_log
+            .iter()
+            .enumerate()
+            .skip(from_event_index)
+            .filter(|(_, event)| self.event_visible_to_player(player_id, event))
+            .map(|(event_index, record)| IndexedEventRecord {
+                event_index,
+                record: record.clone(),
+            })
             .collect())
     }
 
@@ -3013,10 +3034,10 @@ fn training_throughput_requirement(target_tier: u8) -> u32 {
 
 fn training_duration_ticks(target_tier: u8, models_level: u8) -> u32 {
     let base_ticks = match target_tier {
-        2 => 8,
-        3 => 12,
-        4 => 16,
-        5 => 20,
+        2 => 32,
+        3 => 48,
+        4 => 72,
+        5 => 96,
         _ => u32::MAX,
     };
     let modifier_percent = match models_level {
