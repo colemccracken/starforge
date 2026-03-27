@@ -470,6 +470,15 @@ impl GameSession {
                 destination_location_id,
                 TransitKind::Claim,
             ),
+            CommandKind::DispatchAssaultTransit {
+                origin_location_id,
+                destination_location_id,
+            } => self.apply_dispatch_transit(
+                player_id,
+                origin_location_id,
+                destination_location_id,
+                TransitKind::Assault,
+            ),
             CommandKind::SurveyLocation { location_id } => {
                 self.apply_survey_location(player_id, location_id)
             }
@@ -611,6 +620,7 @@ impl GameSession {
             economy: Default::default(),
             stockpiles: Default::default(),
             hostile_remnant: None,
+            contesting_players: Vec::new(),
         });
         self.state
             .locations
@@ -1091,6 +1101,19 @@ impl GameSession {
                     }
                 }
             }
+            TransitKind::Assault => {
+                if let Ok(events) =
+                    self.resolve_assault_arrival(transit.player_id, transit.destination_id)
+                {
+                    for kind in events {
+                        self.event_log.push(EventRecord {
+                            tick_id: self.state.tick_id,
+                            player_id: Some(transit.player_id),
+                            kind,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -1160,6 +1183,61 @@ impl GameSession {
                         code: "hostile_remnant_present".to_owned(),
                         message: "claiming requires hostile remnants to be cleared first"
                             .to_owned(),
+                    });
+                }
+
+                Ok(())
+            }
+            TransitKind::Assault => {
+                let location = self.location_state(destination_location_id)?;
+                if !self
+                    .player_state(player_id)?
+                    .visibility
+                    .surveyed_location_ids
+                    .contains(&destination_location_id)
+                {
+                    return Err(ValidationError {
+                        code: "location_not_surveyed".to_owned(),
+                        message: "assault requires a previously surveyed destination".to_owned(),
+                    });
+                }
+
+                if location.hostile_remnant.is_some() {
+                    return Err(ValidationError {
+                        code: "hostile_remnant_present".to_owned(),
+                        message:
+                            "assault expeditions currently require hostile remnants to be cleared first"
+                                .to_owned(),
+                    });
+                }
+
+                if location.territory == TerritoryState::Contested
+                    && (location.controller == Some(player_id)
+                        || location.contesting_players.contains(&player_id))
+                {
+                    return Err(ValidationError {
+                        code: "location_already_contested".to_owned(),
+                        message:
+                            "assault cannot be queued when the issuing player is already contesting the destination"
+                                .to_owned(),
+                    });
+                }
+
+                if location.controller == Some(player_id)
+                    && location.territory == TerritoryState::Owned
+                {
+                    return Err(ValidationError {
+                        code: "location_already_controlled".to_owned(),
+                        message: "assault requires a non-owned destination".to_owned(),
+                    });
+                }
+
+                if location.controller.is_none() {
+                    return Err(ValidationError {
+                        code: "destination_not_enemy_controlled".to_owned(),
+                        message:
+                            "assault expeditions currently require an enemy-controlled destination"
+                                .to_owned(),
                     });
                 }
 
@@ -1247,6 +1325,56 @@ impl GameSession {
         Ok(events)
     }
 
+    fn resolve_assault_arrival(
+        &mut self,
+        player_id: PlayerId,
+        destination_location_id: u32,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        let defender_id = {
+            let location = self.location_state_mut(destination_location_id)?;
+            if location.controller == Some(player_id) && location.territory == TerritoryState::Owned
+            {
+                return Err(ValidationError {
+                    code: "location_already_controlled".to_owned(),
+                    message:
+                        "assault arrival found a destination already controlled by the attacker"
+                            .to_owned(),
+                });
+            }
+
+            if location.controller.is_none() {
+                return Err(ValidationError {
+                    code: "destination_not_enemy_controlled".to_owned(),
+                    message: "assault arrival requires an enemy-controlled destination".to_owned(),
+                });
+            }
+
+            let defender_id = location.controller;
+            location.territory = TerritoryState::Contested;
+            crate::state::push_unique_sorted_player_id(&mut location.contesting_players, player_id);
+            defender_id
+        };
+
+        if let Ok(attacker) = self.player_state_mut(player_id) {
+            attacker.visibility.mark_contested(destination_location_id);
+        }
+        if let Some(defender_id) = defender_id
+            && let Ok(defender) = self.player_state_mut(defender_id)
+        {
+            defender.visibility.mark_contested(destination_location_id);
+        }
+
+        self.state.recompute_economy();
+
+        let mut events = vec![EventKind::LocationContested {
+            location_id: destination_location_id,
+            attacker_id: player_id,
+            defender_id,
+        }];
+        events.extend(self.economy_updated_events());
+        Ok(events)
+    }
+
     fn player_state(&self, player_id: PlayerId) -> Result<&crate::PlayerState, ValidationError> {
         self.state
             .players
@@ -1303,8 +1431,9 @@ impl GameSession {
                 .locations
                 .iter()
                 .filter(|location| {
-                    location.controller == Some(player.player_id)
-                        && location.territory == TerritoryState::Contested
+                    location.territory == TerritoryState::Contested
+                        && (location.controller == Some(player.player_id)
+                            || location.contesting_players.contains(&player.player_id))
                 })
                 .map(|location| location.location_id)
                 .collect();
@@ -1415,7 +1544,8 @@ impl GameSession {
             EventKind::RelayStatusChanged { location_id, .. }
             | EventKind::InfrastructureConditionChanged { location_id, .. }
             | EventKind::HostileRemnantCleared { location_id }
-            | EventKind::LocationClaimed { location_id, .. } => {
+            | EventKind::LocationClaimed { location_id, .. }
+            | EventKind::LocationContested { location_id, .. } => {
                 self.location_is_observed_by_player(player_id, *location_id)
             }
             EventKind::VictoryDeclared { .. } => true,
@@ -1431,8 +1561,12 @@ impl GameSession {
                     .contains(&location_id)
                     || self.state.locations.iter().any(|location| {
                         location.location_id == location_id
-                            && location.controller == Some(player_id)
-                            && location.territory == TerritoryState::Owned
+                            && ((location.controller == Some(player_id)
+                                && matches!(
+                                    location.territory,
+                                    TerritoryState::Owned | TerritoryState::Contested
+                                ))
+                                || location.contesting_players.contains(&player_id))
                     })
             })
             .unwrap_or(false)
@@ -1635,6 +1769,7 @@ fn project_location_for_player(
             visibility: LocationVisibility::Owned,
             territory: location.territory.clone(),
             controller: location.controller,
+            contesting_players: Some(location.contesting_players.clone()),
             kind: Some(location.kind.clone()),
             resource_richness: Some(location.resource_richness.clone()),
             energy_potential: Some(location.energy_potential.clone()),
@@ -1657,6 +1792,7 @@ fn project_location_for_player(
             visibility: LocationVisibility::Observed,
             territory: location.territory.clone(),
             controller: location.controller,
+            contesting_players: Some(location.contesting_players.clone()),
             kind: Some(location.kind.clone()),
             resource_richness: Some(location.resource_richness.clone()),
             energy_potential: Some(location.energy_potential.clone()),
@@ -1679,6 +1815,7 @@ fn project_location_for_player(
             visibility: LocationVisibility::Surveyed,
             territory: TerritoryState::Obscured,
             controller: None,
+            contesting_players: None,
             kind: Some(location.kind.clone()),
             resource_richness: Some(location.resource_richness.clone()),
             energy_potential: Some(location.energy_potential.clone()),
@@ -1700,6 +1837,7 @@ fn project_location_for_player(
         visibility: LocationVisibility::Obscured,
         territory: TerritoryState::Obscured,
         controller: None,
+        contesting_players: None,
         kind: None,
         resource_richness: None,
         energy_potential: None,

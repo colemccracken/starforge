@@ -106,6 +106,16 @@ entries:
       - command_kind.dispatch_claim_transit
     related_ids:
       - conflict.pacification_and_claim
+  - id: commands.dispatch_assault_transit
+    title: DispatchAssaultTransit
+    kind: command
+    parent_id: commands
+    summary: Sends an assault transit to an enemy-controlled world in order to contest it.
+    status: implemented
+    implementation_keys:
+      - command_kind.dispatch_assault_transit
+    related_ids:
+      - conflict.conquest_rules
   - id: commands.survey_location
     title: SurveyLocation
     kind: command

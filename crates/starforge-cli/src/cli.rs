@@ -12,6 +12,7 @@ const AFTER_HELP: &str = r#"Command Quick Reference:
   starforge-cli survey --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli pacify --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli claim --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
+  starforge-cli assault --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli build --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
   starforge-cli repair --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
   starforge-cli relay --session <PATH> --player <PLAYER> --location <LOCATION> --status <STATUS>
@@ -56,6 +57,7 @@ pub(crate) enum Command {
     Survey(TransitArgs),
     Pacify(TransitArgs),
     Claim(TransitArgs),
+    Assault(TransitArgs),
     Build(InfrastructureArgs),
     Repair(InfrastructureArgs),
     Relay(RelayArgs),
@@ -261,6 +263,36 @@ mod tests {
                         session: PathBuf::from("session.json"),
                     },
                     player: PlayerId::new(1),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn assault_accepts_transit_arguments() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "assault",
+                "--session",
+                "session.json",
+                "--player",
+                "1",
+                "--origin",
+                "4",
+                "--destination",
+                "9",
+            ]),
+            Cli {
+                command: Command::Assault(TransitArgs {
+                    common: SessionPlayerArgs {
+                        session: SessionArg {
+                            session: PathBuf::from("session.json"),
+                        },
+                        player: PlayerId::new(1),
+                    },
+                    origin: 4,
+                    destination: 9,
                 }),
             }
         );

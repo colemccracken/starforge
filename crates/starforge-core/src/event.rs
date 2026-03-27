@@ -105,6 +105,11 @@ pub enum EventKind {
         location_id: u32,
         player_id: PlayerId,
     },
+    LocationContested {
+        location_id: u32,
+        attacker_id: PlayerId,
+        defender_id: Option<PlayerId>,
+    },
     TrainingRunStarted {
         target_tier: u8,
         required_training_throughput: u32,
@@ -155,6 +160,7 @@ pub enum EventDiscriminant {
     LocationSurveyed,
     HostileRemnantCleared,
     LocationClaimed,
+    LocationContested,
     TrainingRunStarted,
     TrainingRunCompleted,
     VictoryDeclared,
@@ -196,6 +202,7 @@ impl From<&EventKind> for EventDiscriminant {
             EventKind::LocationSurveyed { .. } => Self::LocationSurveyed,
             EventKind::HostileRemnantCleared { .. } => Self::HostileRemnantCleared,
             EventKind::LocationClaimed { .. } => Self::LocationClaimed,
+            EventKind::LocationContested { .. } => Self::LocationContested,
             EventKind::TrainingRunStarted { .. } => Self::TrainingRunStarted,
             EventKind::TrainingRunCompleted { .. } => Self::TrainingRunCompleted,
             EventKind::VictoryDeclared { .. } => Self::VictoryDeclared,

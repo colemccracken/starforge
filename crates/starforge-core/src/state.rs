@@ -294,6 +294,8 @@ pub struct LocationState {
     pub economy: LocationEconomyState,
     pub stockpiles: ResourceStockpiles,
     pub hostile_remnant: Option<HostileRemnantSeed>,
+    #[serde(default)]
+    pub contesting_players: Vec<PlayerId>,
 }
 
 impl From<StartingLocation> for LocationState {
@@ -324,6 +326,7 @@ impl From<StartingLocation> for LocationState {
             economy: LocationEconomyState::default(),
             stockpiles,
             hostile_remnant: location.hostile_remnant,
+            contesting_players: Vec::new(),
         }
     }
 }
@@ -352,6 +355,11 @@ impl VisibilityState {
         push_unique_sorted(&mut self.observed_location_ids, location_id);
         self.stale_location_ids
             .retain(|known_id| *known_id != location_id);
+    }
+
+    pub fn mark_contested(&mut self, location_id: u32) {
+        self.mark_surveyed(location_id);
+        push_unique_sorted(&mut self.contested_location_ids, location_id);
     }
 
     pub fn refresh_owned_and_contested(
@@ -401,6 +409,7 @@ pub struct LocationView {
     pub visibility: LocationVisibility,
     pub territory: TerritoryState,
     pub controller: Option<PlayerId>,
+    pub contesting_players: Option<Vec<PlayerId>>,
     pub kind: Option<LocationKind>,
     pub resource_richness: Option<ResourceRichness>,
     pub energy_potential: Option<EnergyPotential>,
@@ -441,6 +450,7 @@ pub enum TransitKind {
     Survey,
     Pacification,
     Claim,
+    Assault,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -956,6 +966,13 @@ const fn extraction_rare_materials(resource_richness: ResourceRichness) -> u32 {
 }
 
 fn push_unique_sorted(values: &mut Vec<u32>, value: u32) {
+    if !values.contains(&value) {
+        values.push(value);
+        values.sort_unstable();
+    }
+}
+
+pub(crate) fn push_unique_sorted_player_id(values: &mut Vec<PlayerId>, value: PlayerId) {
     if !values.contains(&value) {
         values.push(value);
         values.sort_unstable();

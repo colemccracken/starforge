@@ -307,6 +307,33 @@ mod tests {
         }
     }
 
+    fn assault_fixture_scenario() -> ScenarioConfig {
+        ScenarioConfig {
+            starting_locations: vec![
+                compute_homeworld(
+                    PlayerId::new(1),
+                    1,
+                    "Helios",
+                    EnergyPotential::High,
+                    BuildCapacity::Expansive,
+                ),
+                compute_homeworld(
+                    PlayerId::new(2),
+                    2,
+                    "Selene",
+                    EnergyPotential::High,
+                    BuildCapacity::Expansive,
+                ),
+            ],
+            connections: vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 10,
+            }],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
     fn claim_fixture_scenario() -> ScenarioConfig {
         let mut scenario = survey_fixture_scenario();
         scenario.starting_locations[1].has_environmental_hazard = false;
@@ -1859,6 +1886,86 @@ mod tests {
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
             EventKind::HostileRemnantCleared { location_id: 2 }
+        )));
+    }
+
+    #[test]
+    fn assault_transit_contests_enemy_world_and_reveals_it_to_both_players() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            assault_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(10);
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchAssaultTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("assault transit should be accepted");
+        session.advance_ticks(10);
+
+        let location = session
+            .state()
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("enemy location should exist");
+        assert_eq!(location.territory, TerritoryState::Contested);
+        assert_eq!(location.controller, Some(PlayerId::new(2)));
+        assert_eq!(location.contesting_players, vec![PlayerId::new(1)]);
+
+        let attacker_view = session
+            .player_view(PlayerId::new(1))
+            .expect("attacker view should be available");
+        let defender_view = session
+            .player_view(PlayerId::new(2))
+            .expect("defender view should be available");
+        let attacker_location = attacker_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("attacker should see contested location");
+        let defender_location = defender_view
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("defender should see contested location");
+
+        assert_eq!(attacker_location.visibility, LocationVisibility::Observed);
+        assert_eq!(attacker_location.territory, TerritoryState::Contested);
+        assert_eq!(attacker_location.controller, Some(PlayerId::new(2)));
+        assert_eq!(
+            attacker_location.contesting_players,
+            Some(vec![PlayerId::new(1)])
+        );
+        assert_eq!(defender_location.visibility, LocationVisibility::Observed);
+        assert_eq!(defender_location.territory, TerritoryState::Contested);
+
+        let defender_events = session
+            .player_events(PlayerId::new(2), TickId::default())
+            .expect("defender event feed should be available");
+        assert!(defender_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::LocationContested {
+                location_id: 2,
+                attacker_id,
+                defender_id,
+            } if *attacker_id == PlayerId::new(1) && *defender_id == Some(PlayerId::new(2))
         )));
     }
 

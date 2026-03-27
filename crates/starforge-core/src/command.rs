@@ -56,6 +56,10 @@ pub enum CommandKind {
         origin_location_id: u32,
         destination_location_id: u32,
     },
+    DispatchAssaultTransit {
+        origin_location_id: u32,
+        destination_location_id: u32,
+    },
     SurveyLocation {
         location_id: u32,
     },
@@ -91,6 +95,7 @@ pub enum CommandDiscriminant {
     DispatchSurveyTransit,
     DispatchPacificationTransit,
     DispatchClaimTransit,
+    DispatchAssaultTransit,
     SurveyLocation,
     StartTrainingRun,
 }
@@ -118,6 +123,7 @@ impl From<&CommandKind> for CommandDiscriminant {
             CommandKind::DispatchSurveyTransit { .. } => Self::DispatchSurveyTransit,
             CommandKind::DispatchPacificationTransit { .. } => Self::DispatchPacificationTransit,
             CommandKind::DispatchClaimTransit { .. } => Self::DispatchClaimTransit,
+            CommandKind::DispatchAssaultTransit { .. } => Self::DispatchAssaultTransit,
             CommandKind::SurveyLocation { .. } => Self::SurveyLocation,
             CommandKind::StartTrainingRun { .. } => Self::StartTrainingRun,
         }

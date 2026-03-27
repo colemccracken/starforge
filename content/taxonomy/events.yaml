@@ -164,6 +164,14 @@ entries:
     status: implemented
     implementation_keys:
       - event_kind.location_claimed
+  - id: events.location_contested
+    title: LocationContested
+    kind: event
+    parent_id: events
+    summary: Emits when an assault transit contests an enemy-controlled world.
+    status: implemented
+    implementation_keys:
+      - event_kind.location_contested
   - id: events.training_run_started
     title: TrainingRunStarted
     kind: event

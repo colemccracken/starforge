@@ -199,12 +199,17 @@ entries:
     title: Conquest Rules
     kind: concept
     parent_id: conflict
-    summary: Full conquest, takeover, and destruction outcomes remain future work beyond neutral-world expansion.
-    status: planned
+    summary: Military conquest is beginning with assault transits that create contested enemy worlds, but takeover and destruction outcomes remain future work.
+    status: draft
     reference_sections:
       - Conquest Rules
       - Takeover Outcome
       - Destruction Outcome
+    implementation_keys:
+      - core.session.resolve_assault_arrival
+    related_ids:
+      - commands.dispatch_assault_transit
+      - events.location_contested
 
   - id: victory
     title: Victory And Defeat

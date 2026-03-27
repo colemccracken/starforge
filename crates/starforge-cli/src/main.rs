@@ -64,6 +64,15 @@ fn run(cli: Cli) -> Result<(), DynError> {
             },
             "claim expedition queued",
         ),
+        CliCommand::Assault(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchAssaultTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "assault expedition queued",
+        ),
         CliCommand::Build(args) => cmd_mutate(
             &args.common.session.session,
             args.common.player,
@@ -415,6 +424,11 @@ fn render_location(location: &LocationView) -> String {
     if let Some(hostile_remnant_present) = location.hostile_remnant_present {
         summary.push_str(&format!(" remnant={hostile_remnant_present}"));
     }
+    if let Some(contesting_players) = &location.contesting_players
+        && !contesting_players.is_empty()
+    {
+        summary.push_str(&format!(" contesting={contesting_players:?}"));
+    }
     if let Some(relay_status) = &location.relay_status {
         summary.push_str(&format!(" relay={relay_status:?}"));
     }
@@ -475,6 +489,7 @@ fn render_transit_kind(kind: &TransitKind) -> &'static str {
         TransitKind::Survey => "survey",
         TransitKind::Pacification => "pacify",
         TransitKind::Claim => "claim",
+        TransitKind::Assault => "assault",
     }
 }
 
@@ -616,6 +631,17 @@ fn render_event(event: &starforge_core::EventKind) -> String {
             location_id,
             player_id,
         } => format!("location #{} claimed by P{}", location_id, player_id.0),
+        starforge_core::EventKind::LocationContested {
+            location_id,
+            attacker_id,
+            defender_id,
+        } => match defender_id {
+            Some(defender_id) => format!(
+                "location #{} contested by P{} against P{}",
+                location_id, attacker_id.0, defender_id.0
+            ),
+            None => format!("location #{} contested by P{}", location_id, attacker_id.0),
+        },
         starforge_core::EventKind::TrainingRunStarted {
             target_tier,
             required_training_throughput,

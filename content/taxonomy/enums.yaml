@@ -171,3 +171,4 @@ entries:
       - transit_kind.survey
       - transit_kind.pacification
       - transit_kind.claim
+      - transit_kind.assault
