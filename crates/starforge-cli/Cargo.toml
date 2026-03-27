@@ -7,6 +7,9 @@ version.workspace = true
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+reqwest.workspace = true
+serde.workspace = true
+starforge-api = { path = "../starforge-api" }
 starforge-core = { path = "../starforge-core" }
 starforge-scenarios = { path = "../starforge-scenarios" }
 
@@ -14,3 +17,4 @@ starforge-scenarios = { path = "../starforge-scenarios" }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+tokio.workspace = true

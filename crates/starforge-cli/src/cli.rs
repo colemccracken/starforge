@@ -20,6 +20,11 @@ const AFTER_HELP: &str = r#"Command Quick Reference:
   starforge-cli budget --session <PATH> --player <PLAYER> --upkeep <N> --training <N> --agents <N>
   starforge-cli train --session <PATH> --player <PLAYER> --target-tier <TIER>
 
+HTTP API mode:
+  Add `--api-base http://127.0.0.1:8080` before the subcommand.
+  In API mode, `--session` should be the numeric session id returned by `new`.
+  Example: starforge-cli --api-base http://127.0.0.1:8080 status --session 1 --player 1
+
 Aliases:
   --session also supports -s
   --player also supports -p
@@ -44,6 +49,8 @@ Prototype loop:
     after_help = AFTER_HELP
 )]
 pub(crate) struct Cli {
+    #[arg(long, global = true, value_name = "URL")]
+    pub(crate) api_base: Option<String>,
     #[command(subcommand)]
     pub(crate) command: Command,
 }
@@ -216,6 +223,7 @@ mod tests {
         assert_eq!(
             parse_ok(&["starforge-cli", "new"]),
             Cli {
+                api_base: None,
                 command: Command::New(NewArgs { session: None }),
             }
         );
@@ -226,6 +234,7 @@ mod tests {
         assert_eq!(
             parse_ok(&["starforge-cli", "new", "-s", "session.json"]),
             Cli {
+                api_base: None,
                 command: Command::New(NewArgs {
                     session: Some(PathBuf::from("session.json")),
                 }),
@@ -245,6 +254,7 @@ mod tests {
                 "1",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Status(SessionPlayerArgs {
                     session: SessionArg {
                         session: PathBuf::from("session.json"),
@@ -260,9 +270,35 @@ mod tests {
         assert_eq!(
             parse_ok(&["starforge-cli", "status", "-s", "session.json", "-p", "1"]),
             Cli {
+                api_base: None,
                 command: Command::Status(SessionPlayerArgs {
                     session: SessionArg {
                         session: PathBuf::from("session.json"),
+                    },
+                    player: PlayerId::new(1),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn status_accepts_global_api_base_flag() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "--api-base",
+                "http://127.0.0.1:8080",
+                "status",
+                "-s",
+                "1",
+                "-p",
+                "1",
+            ]),
+            Cli {
+                api_base: Some("http://127.0.0.1:8080".to_owned()),
+                command: Command::Status(SessionPlayerArgs {
+                    session: SessionArg {
+                        session: PathBuf::from("1"),
                     },
                     player: PlayerId::new(1),
                 }),
@@ -286,6 +322,7 @@ mod tests {
                 "9",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Assault(TransitArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -316,6 +353,7 @@ mod tests {
                 "9",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Strike(TransitArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -335,6 +373,7 @@ mod tests {
         assert_eq!(
             parse_ok(&["starforge-cli", "map", "-s", "session.json", "-p", "2"]),
             Cli {
+                api_base: None,
                 command: Command::Map(SessionPlayerArgs {
                     session: SessionArg {
                         session: PathBuf::from("session.json"),
@@ -350,6 +389,7 @@ mod tests {
         assert_eq!(
             parse_ok(&["starforge-cli", "events", "-s", "session.json", "-p", "1"]),
             Cli {
+                api_base: None,
                 command: Command::Events(EventsArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -377,6 +417,7 @@ mod tests {
                 "4",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Events(EventsArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -402,6 +443,7 @@ mod tests {
                 "3"
             ]),
             Cli {
+                api_base: None,
                 command: Command::Step(StepArgs {
                     session: SessionArg {
                         session: PathBuf::from("session.json"),
@@ -428,6 +470,7 @@ mod tests {
                 "9",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Survey(TransitArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -458,6 +501,7 @@ mod tests {
                 "9",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Pacify(TransitArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -488,6 +532,7 @@ mod tests {
                 "9",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Claim(TransitArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -518,6 +563,7 @@ mod tests {
                 "command-nexus",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Build(InfrastructureArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -548,6 +594,7 @@ mod tests {
                 "datacenter",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Repair(InfrastructureArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -578,6 +625,7 @@ mod tests {
                 "disconnected",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Relay(RelayArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -610,6 +658,7 @@ mod tests {
                 "30",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Budget(BudgetArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {
@@ -639,6 +688,7 @@ mod tests {
                 "4",
             ]),
             Cli {
+                api_base: None,
                 command: Command::Train(TrainArgs {
                     common: SessionPlayerArgs {
                         session: SessionArg {

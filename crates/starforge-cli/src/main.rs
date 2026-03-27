@@ -5,9 +5,13 @@ use std::{
 };
 
 use clap::Parser;
+use reqwest::blocking::Client;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use starforge_api::{ApiSessionSummary, IssueCommandRequest, StepSessionRequest};
 use starforge_core::{
-    CommandCollapseState, CommandKind, GameSession, InfrastructureCondition, LocationView,
-    PlayerId, SessionId, TickId, TransitKind, VictoryState,
+    CommandCollapseState, CommandKind, EventRecord, GameSession, InfrastructureCondition,
+    LocationView, PlayerId, PlayerStateView, SessionId, TickId, TransitKind, VictoryState,
 };
 use starforge_scenarios::starter_skirmish_harness;
 
@@ -27,7 +31,15 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), DynError> {
-    match cli.command {
+    let Cli { api_base, command } = cli;
+    match api_base.as_deref() {
+        Some(api_base) => run_api(api_base, command),
+        None => run_file(command),
+    }
+}
+
+fn run_file(command: CliCommand) -> Result<(), DynError> {
+    match command {
         CliCommand::New(args) => cmd_new(args.session),
         CliCommand::Status(args) => cmd_status(&args.session.session, args.player),
         CliCommand::Map(args) => cmd_map(&args.session.session, args.player),
@@ -130,6 +142,121 @@ fn run(cli: Cli) -> Result<(), DynError> {
     }
 }
 
+fn run_api(api_base: &str, command: CliCommand) -> Result<(), DynError> {
+    match command {
+        CliCommand::New(args) => cmd_new_api(api_base, args.session),
+        CliCommand::Status(args) => cmd_status_api(api_base, &args.session.session, args.player),
+        CliCommand::Map(args) => cmd_map_api(api_base, &args.session.session, args.player),
+        CliCommand::Events(args) => cmd_events_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            TickId::new(args.from_tick),
+        ),
+        CliCommand::Step(args) => cmd_step_api(api_base, &args.session.session, args.ticks),
+        CliCommand::Survey(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchSurveyTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "survey expedition queued",
+        ),
+        CliCommand::Pacify(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchPacificationTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "pacification expedition queued",
+        ),
+        CliCommand::Claim(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchClaimTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "claim expedition queued",
+        ),
+        CliCommand::Assault(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchAssaultTransit {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "assault expedition queued",
+        ),
+        CliCommand::Strike(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchStrategicStrike {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "strategic strike queued",
+        ),
+        CliCommand::Build(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::QueueInfrastructureConstruction {
+                location_id: args.location,
+                infrastructure_kind: args.kind,
+            },
+            "construction queued",
+        ),
+        CliCommand::Repair(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::QueueInfrastructureRepair {
+                location_id: args.location,
+                infrastructure_kind: args.kind,
+            },
+            "repair queued",
+        ),
+        CliCommand::Relay(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::SetRelayStatus {
+                location_id: args.location,
+                relay_status: args.status,
+            },
+            "relay status updated",
+        ),
+        CliCommand::Budget(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::SetThroughputBudget {
+                reserved_for_model_upkeep: args.upkeep,
+                reserved_for_training: args.training,
+                reserved_for_agents: args.agents,
+            },
+            "throughput budget updated",
+        ),
+        CliCommand::Train(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::StartTrainingRun {
+                target_tier: args.target_tier,
+            },
+            "training run started",
+        ),
+    }
+}
+
 fn cmd_new(session_path: Option<PathBuf>) -> Result<(), DynError> {
     let session_path = session_path.unwrap_or_else(default_session_path);
     if session_path.exists() {
@@ -188,71 +315,12 @@ fn cmd_new(session_path: Option<PathBuf>) -> Result<(), DynError> {
 fn cmd_status(session_path: &Path, player_id: PlayerId) -> Result<(), DynError> {
     let session = load_session(session_path)?;
     let view = session.player_view(player_id)?;
-    let owned_count = view
-        .locations
-        .iter()
-        .filter(|location| location.visibility == starforge_core::LocationVisibility::Owned)
-        .count();
-
-    println!("Session: {}", session_path.display());
-    println!("Tick: {}", view.tick_id.0);
-    println!("Victory: {}", render_victory(&session.state().victory));
-    println!("Player: P{}", player_id.0);
-    println!("Model tier: {}", view.model_tier);
-    println!("Collapse: {}", render_collapse(&view.collapse));
-    println!("Owned worlds: {}", owned_count);
-    println!(
-        "Throughput: available={} upkeep={} training={} agents={}",
-        view.throughput.available,
-        view.throughput.reserved_for_model_upkeep,
-        view.throughput.reserved_for_training,
-        view.throughput.reserved_for_agents
+    print_status(
+        &session_path.display().to_string(),
+        &session.state().victory,
+        player_id,
+        &view,
     );
-    println!(
-        "Connected economy: energy={} datacenter={} usable_throughput={}",
-        view.economy.total_connected_energy,
-        view.economy.total_connected_datacenter_capacity,
-        view.economy.usable_throughput
-    );
-    println!(
-        "Connected stockpiles: {}",
-        format_stockpiles(&view.economy.connected_stockpiles)
-    );
-
-    match &view.training {
-        Some(training) => {
-            let site_suffix = training
-                .ascension_site_location_id
-                .map(|location_id| format!(" site=#{location_id}"))
-                .unwrap_or_default();
-            println!(
-                "Training: tier {} progress {}/{} requiring {} training throughput{}",
-                training.target_tier,
-                training.progress_ticks,
-                training.required_ticks,
-                training.required_training_throughput,
-                site_suffix
-            );
-        }
-        None => println!("Training: none"),
-    }
-
-    if view.transits.is_empty() {
-        println!("Transits: none");
-    } else {
-        println!("Transits:");
-        for transit in &view.transits {
-            println!(
-                "  #{} {} {} -> {} eta={}",
-                transit.transit_id,
-                render_transit_kind(&transit.kind),
-                transit.origin_id,
-                transit.destination_id,
-                transit.eta_tick.0
-            );
-        }
-    }
-
     Ok(())
 }
 
@@ -320,6 +388,317 @@ fn cmd_mutate(
     save_session(session_path, &session)?;
     println!("{success_message} at tick {}", session.current_tick().0);
     Ok(())
+}
+
+fn cmd_new_api(api_base: &str, session_path: Option<PathBuf>) -> Result<(), DynError> {
+    if let Some(session_path) = session_path {
+        return Err(format!(
+            "api mode does not use session files; remove --session {} and rerun",
+            session_path.display()
+        )
+        .into());
+    }
+
+    let client = api_client();
+    let summary: ApiSessionSummary = api_post_empty(
+        &client,
+        &format!("{}/sessions", normalize_api_base(api_base)),
+    )?;
+
+    println!(
+        "Created remote session #{} via {}",
+        summary.session_id.0,
+        normalize_api_base(api_base)
+    );
+    println!("Scenario: {}", summary.scenario_name);
+    println!();
+    println!("Suggested first steps:");
+    println!(
+        "  starforge-cli --api-base {} map --session {} --player 1",
+        normalize_api_base(api_base),
+        summary.session_id.0
+    );
+    println!(
+        "  starforge-cli --api-base {} status --session {} --player 1",
+        normalize_api_base(api_base),
+        summary.session_id.0
+    );
+
+    Ok(())
+}
+
+fn cmd_status_api(api_base: &str, session_arg: &Path, player_id: PlayerId) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let summary = api_session_summary(&client, api_base, session_id)?;
+    let view = api_player_view(&client, api_base, session_id, player_id)?;
+    print_status(
+        &format!("#{} @ {}", session_id.0, normalize_api_base(api_base)),
+        &summary.victory,
+        player_id,
+        &view,
+    );
+    Ok(())
+}
+
+fn cmd_map_api(api_base: &str, session_arg: &Path, player_id: PlayerId) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let summary = api_session_summary(&client, api_base, session_id)?;
+    let view = api_player_view(&client, api_base, session_id, player_id)?;
+
+    println!(
+        "Map for P{} at tick {} ({})",
+        player_id.0,
+        view.tick_id.0,
+        render_victory(&summary.victory)
+    );
+    for location in &view.locations {
+        println!("{}", render_location(location));
+    }
+    println!();
+    println!("Reachable routes from currently known worlds:");
+    println!("  unavailable via API-backed CLI until route projection is exposed");
+    Ok(())
+}
+
+fn cmd_events_api(
+    api_base: &str,
+    session_arg: &Path,
+    player_id: PlayerId,
+    from_tick: TickId,
+) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let events = api_player_events(&client, api_base, session_id, player_id, from_tick)?;
+
+    if events.is_empty() {
+        println!(
+            "No visible events for P{} from tick {}",
+            player_id.0, from_tick.0
+        );
+        return Ok(());
+    }
+
+    for event in events {
+        println!("[{}] {}", event.tick_id.0, render_event(&event.kind));
+    }
+
+    Ok(())
+}
+
+fn cmd_step_api(api_base: &str, session_arg: &Path, ticks: u32) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let summary: ApiSessionSummary = api_post_json(
+        &client,
+        &format!(
+            "{}/sessions/{}/step",
+            normalize_api_base(api_base),
+            session_id.0
+        ),
+        &StepSessionRequest { ticks },
+    )?;
+    println!(
+        "Advanced to tick {}. {}",
+        summary.current_tick.0,
+        render_victory(&summary.victory)
+    );
+    Ok(())
+}
+
+fn cmd_mutate_api(
+    api_base: &str,
+    session_arg: &Path,
+    player_id: PlayerId,
+    command: CommandKind,
+    success_message: &str,
+) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let summary: ApiSessionSummary = api_post_json(
+        &client,
+        &format!(
+            "{}/sessions/{}/commands",
+            normalize_api_base(api_base),
+            session_id.0
+        ),
+        &IssueCommandRequest {
+            player_id: player_id.0,
+            command,
+        },
+    )?;
+    println!("{success_message} at tick {}", summary.current_tick.0);
+    Ok(())
+}
+
+fn api_client() -> Client {
+    Client::new()
+}
+
+fn normalize_api_base(api_base: &str) -> &str {
+    api_base.trim_end_matches('/')
+}
+
+fn parse_session_id_arg(session_arg: &Path) -> Result<SessionId, DynError> {
+    let raw = session_arg.to_string_lossy();
+    let value = raw.parse::<u64>().map_err(|_| {
+        format!(
+            "api mode expects --session to be a numeric session id, got '{}'",
+            raw
+        )
+    })?;
+    Ok(SessionId::new(value))
+}
+
+fn api_session_summary(
+    client: &Client,
+    api_base: &str,
+    session_id: SessionId,
+) -> Result<ApiSessionSummary, DynError> {
+    api_get_json(
+        client,
+        &format!("{}/sessions/{}", normalize_api_base(api_base), session_id.0),
+    )
+}
+
+fn api_player_view(
+    client: &Client,
+    api_base: &str,
+    session_id: SessionId,
+    player_id: PlayerId,
+) -> Result<PlayerStateView, DynError> {
+    api_get_json(
+        client,
+        &format!(
+            "{}/sessions/{}/state?player_id={}",
+            normalize_api_base(api_base),
+            session_id.0,
+            player_id.0
+        ),
+    )
+}
+
+fn api_player_events(
+    client: &Client,
+    api_base: &str,
+    session_id: SessionId,
+    player_id: PlayerId,
+    from_tick: TickId,
+) -> Result<Vec<EventRecord>, DynError> {
+    api_get_json(
+        client,
+        &format!(
+            "{}/sessions/{}/events?player_id={}&from_tick={}",
+            normalize_api_base(api_base),
+            session_id.0,
+            player_id.0,
+            from_tick.0
+        ),
+    )
+}
+
+fn api_get_json<T: DeserializeOwned>(client: &Client, url: &str) -> Result<T, DynError> {
+    let response = client.get(url).send()?;
+    api_response_json(response)
+}
+
+fn api_post_empty<T: DeserializeOwned>(client: &Client, url: &str) -> Result<T, DynError> {
+    let response = client.post(url).send()?;
+    api_response_json(response)
+}
+
+fn api_post_json<T: DeserializeOwned, B: Serialize>(
+    client: &Client,
+    url: &str,
+    body: &B,
+) -> Result<T, DynError> {
+    let response = client.post(url).json(body).send()?;
+    api_response_json(response)
+}
+
+fn api_response_json<T: DeserializeOwned>(
+    response: reqwest::blocking::Response,
+) -> Result<T, DynError> {
+    let status = response.status();
+    if status.is_success() {
+        Ok(response.json()?)
+    } else {
+        let body = response.text()?;
+        Err(format!("api request failed ({status}): {body}").into())
+    }
+}
+
+fn print_status(
+    session_label: &str,
+    victory: &VictoryState,
+    player_id: PlayerId,
+    view: &PlayerStateView,
+) {
+    let owned_count = view
+        .locations
+        .iter()
+        .filter(|location| location.visibility == starforge_core::LocationVisibility::Owned)
+        .count();
+
+    println!("Session: {session_label}");
+    println!("Tick: {}", view.tick_id.0);
+    println!("Victory: {}", render_victory(victory));
+    println!("Player: P{}", player_id.0);
+    println!("Model tier: {}", view.model_tier);
+    println!("Collapse: {}", render_collapse(&view.collapse));
+    println!("Owned worlds: {}", owned_count);
+    println!(
+        "Throughput: available={} upkeep={} training={} agents={}",
+        view.throughput.available,
+        view.throughput.reserved_for_model_upkeep,
+        view.throughput.reserved_for_training,
+        view.throughput.reserved_for_agents
+    );
+    println!(
+        "Connected economy: energy={} datacenter={} usable_throughput={}",
+        view.economy.total_connected_energy,
+        view.economy.total_connected_datacenter_capacity,
+        view.economy.usable_throughput
+    );
+    println!(
+        "Connected stockpiles: {}",
+        format_stockpiles(&view.economy.connected_stockpiles)
+    );
+
+    match &view.training {
+        Some(training) => {
+            let site_suffix = training
+                .ascension_site_location_id
+                .map(|location_id| format!(" site=#{location_id}"))
+                .unwrap_or_default();
+            println!(
+                "Training: tier {} progress {}/{} requiring {} training throughput{}",
+                training.target_tier,
+                training.progress_ticks,
+                training.required_ticks,
+                training.required_training_throughput,
+                site_suffix
+            );
+        }
+        None => println!("Training: none"),
+    }
+
+    if view.transits.is_empty() {
+        println!("Transits: none");
+    } else {
+        println!("Transits:");
+        for transit in &view.transits {
+            println!(
+                "  #{} {} {} -> {} eta={}",
+                transit.transit_id,
+                render_transit_kind(&transit.kind),
+                transit.origin_id,
+                transit.destination_id,
+                transit.eta_tick.0
+            );
+        }
+    }
 }
 
 fn load_session(session_path: &Path) -> Result<GameSession, DynError> {

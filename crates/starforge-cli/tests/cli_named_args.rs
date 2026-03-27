@@ -1,10 +1,14 @@
 use std::{
     fs,
+    net::TcpListener,
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use starforge_api::ApiServerConfig;
 use starforge_core::SessionId;
 use starforge_scenarios::starter_skirmish_harness;
 use tempfile::tempdir;
@@ -32,6 +36,26 @@ fn temp_session_path() -> (tempfile::TempDir, PathBuf) {
     let temp = tempdir().expect("tempdir should be created");
     let session_path = temp.path().join("session.json");
     (temp, session_path)
+}
+
+fn spawn_api_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    let address = listener.local_addr().expect("local address should resolve");
+    drop(listener);
+
+    let bind_address = format!("127.0.0.1:{}", address.port());
+    let base_url = format!("http://{bind_address}");
+    thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
+        runtime
+            .block_on(starforge_api::run_server(ApiServerConfig {
+                bind_address,
+                ..ApiServerConfig::default()
+            }))
+            .expect("api server should run");
+    });
+    thread::sleep(Duration::from_millis(200));
+    base_url
 }
 
 #[test]
@@ -144,4 +168,30 @@ fn unsupported_short_alias_invocation_fails() {
         .failure()
         .stderr(predicate::str::contains("unexpected argument"))
         .stderr(predicate::str::contains("-t"));
+}
+
+#[test]
+fn api_mode_can_create_and_query_a_remote_session() {
+    let api_base = spawn_api_server();
+
+    cli_command()
+        .args(["--api-base", &api_base, "new"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created remote session #1"));
+
+    cli_command()
+        .args([
+            "--api-base",
+            &api_base,
+            "status",
+            "--session",
+            "1",
+            "--player",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Session: #1 @"))
+        .stdout(predicate::str::contains("Player: P1"));
 }
