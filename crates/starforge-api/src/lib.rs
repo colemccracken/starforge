@@ -3,6 +3,7 @@ use std::{
     fmt,
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
 
 use axum::{
@@ -23,6 +24,7 @@ use starforge_taxonomy::{TaxonomyDocument, TaxonomyError, build_taxonomy_documen
 const TAXONOMY_HTML_TEMPLATE: &str = include_str!("../assets/taxonomy.html");
 const TAXONOMY_CSS: &str = include_str!("../assets/taxonomy.css");
 const TAXONOMY_JS: &str = include_str!("../assets/taxonomy.js");
+const RUN_LOOP_INTERVAL_MS: u64 = 50;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApiServerConfig {
@@ -53,6 +55,7 @@ pub struct ApiSessionSummary {
     pub session_id: SessionId,
     pub scenario_name: String,
     pub current_tick: TickId,
+    pub control_state: SessionControlState,
     pub victory: VictoryState,
     pub player_count: usize,
     pub location_count: usize,
@@ -62,10 +65,19 @@ pub struct ApiSessionSummary {
 pub struct SessionMetrics {
     pub session_id: SessionId,
     pub current_tick: TickId,
+    pub control_state: SessionControlState,
     pub event_count: usize,
     pub accepted_command_count: usize,
     pub pending_command_count: usize,
     pub transit_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionControlState {
+    Running,
+    #[default]
+    Paused,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,7 +123,7 @@ struct ApiState {
 #[derive(Debug)]
 struct SessionStore {
     next_session_id: u64,
-    sessions: BTreeMap<SessionId, GameSession>,
+    sessions: BTreeMap<SessionId, ManagedSession>,
 }
 
 impl Default for SessionStore {
@@ -119,6 +131,21 @@ impl Default for SessionStore {
         Self {
             next_session_id: 1,
             sessions: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ManagedSession {
+    session: GameSession,
+    control_state: SessionControlState,
+}
+
+impl ManagedSession {
+    fn new(session: GameSession) -> Self {
+        Self {
+            session,
+            control_state: SessionControlState::Paused,
         }
     }
 }
@@ -281,6 +308,8 @@ pub fn app_router(config: ApiServerConfig) -> Router {
         .route("/sessions", post(create_session))
         .route("/sessions/load", post(load_session))
         .route("/sessions/{id}", get(get_session))
+        .route("/sessions/{id}/run", post(run_session))
+        .route("/sessions/{id}/pause", post(pause_session))
         .route("/sessions/{id}/step", post(step_session))
         .route("/sessions/{id}/commands", post(issue_command))
         .route("/sessions/{id}/state", get(get_player_state))
@@ -343,26 +372,28 @@ fn player_id(value: u8) -> PlayerId {
     PlayerId::new(value)
 }
 
-fn api_session_summary(session: &GameSession) -> ApiSessionSummary {
+fn api_session_summary(session: &ManagedSession) -> ApiSessionSummary {
     ApiSessionSummary {
-        session_id: session.session_id(),
-        scenario_name: session.scenario().name.clone(),
-        current_tick: session.current_tick(),
-        victory: session.state().victory.clone(),
-        player_count: session.state().players.len(),
-        location_count: session.state().locations.len(),
+        session_id: session.session.session_id(),
+        scenario_name: session.session.scenario().name.clone(),
+        current_tick: session.session.current_tick(),
+        control_state: session.control_state,
+        victory: session.session.state().victory.clone(),
+        player_count: session.session.state().players.len(),
+        location_count: session.session.state().locations.len(),
     }
 }
 
-fn session_metrics(session: &GameSession) -> SessionMetrics {
-    let snapshot = session.snapshot();
+fn session_metrics(session: &ManagedSession) -> SessionMetrics {
+    let snapshot = session.session.snapshot();
     SessionMetrics {
-        session_id: session.session_id(),
-        current_tick: session.current_tick(),
-        event_count: session.event_log().len(),
-        accepted_command_count: session.replay_log().accepted_commands.len(),
+        session_id: session.session.session_id(),
+        current_tick: session.session.current_tick(),
+        control_state: session.control_state,
+        event_count: session.session.event_log().len(),
+        accepted_command_count: session.session.replay_log().accepted_commands.len(),
         pending_command_count: snapshot.pending_commands.len(),
-        transit_count: session.state().transits.len(),
+        transit_count: session.session.state().transits.len(),
     }
 }
 
@@ -411,6 +442,7 @@ async fn create_session(
         session.config().clone(),
         session.scenario().clone(),
     );
+    let session = ManagedSession::new(session);
     let summary = api_session_summary(&session);
     sessions.sessions.insert(session_id, session);
     Ok((StatusCode::CREATED, Json(summary)))
@@ -429,6 +461,49 @@ async fn get_session(
     Ok(Json(api_session_summary(session)))
 }
 
+async fn run_session(
+    Path(id): Path<u64>,
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<ApiSessionSummary>, ApiRouteError> {
+    let session_id = SessionId::new(id);
+    let mut should_spawn = false;
+
+    let summary = {
+        let mut sessions = lock_sessions(&state)?;
+        let session = sessions
+            .sessions
+            .get_mut(&session_id)
+            .ok_or(ApiRouteError::SessionNotFound(session_id))?;
+        if session.session.state().victory == VictoryState::Ongoing
+            && session.control_state != SessionControlState::Running
+        {
+            session.control_state = SessionControlState::Running;
+            should_spawn = true;
+        }
+        api_session_summary(session)
+    };
+
+    if should_spawn {
+        tokio::spawn(run_session_loop(state.clone(), session_id));
+    }
+
+    Ok(Json(summary))
+}
+
+async fn pause_session(
+    Path(id): Path<u64>,
+    State(state): State<Arc<ApiState>>,
+) -> Result<Json<ApiSessionSummary>, ApiRouteError> {
+    let mut sessions = lock_sessions(&state)?;
+    let session_id = SessionId::new(id);
+    let session = sessions
+        .sessions
+        .get_mut(&session_id)
+        .ok_or(ApiRouteError::SessionNotFound(session_id))?;
+    session.control_state = SessionControlState::Paused;
+    Ok(Json(api_session_summary(session)))
+}
+
 async fn step_session(
     Path(id): Path<u64>,
     State(state): State<Arc<ApiState>>,
@@ -440,7 +515,10 @@ async fn step_session(
         .sessions
         .get_mut(&session_id)
         .ok_or(ApiRouteError::SessionNotFound(session_id))?;
-    session.advance_ticks(request.ticks.max(1));
+    session.session.advance_ticks(request.ticks.max(1));
+    if session.session.state().victory != VictoryState::Ongoing {
+        session.control_state = SessionControlState::Paused;
+    }
     Ok(Json(api_session_summary(session)))
 }
 
@@ -455,7 +533,9 @@ async fn issue_command(
         .sessions
         .get_mut(&session_id)
         .ok_or(ApiRouteError::SessionNotFound(session_id))?;
-    session.issue_command_now(player_id(request.player_id), request.command)?;
+    session
+        .session
+        .issue_command_now(player_id(request.player_id), request.command)?;
     Ok(Json(api_session_summary(session)))
 }
 
@@ -470,7 +550,9 @@ async fn get_player_state(
         .sessions
         .get(&session_id)
         .ok_or(ApiRouteError::SessionNotFound(session_id))?;
-    Ok(Json(session.player_view(player_id(query.player_id))?))
+    Ok(Json(
+        session.session.player_view(player_id(query.player_id))?,
+    ))
 }
 
 async fn get_player_events(
@@ -484,7 +566,7 @@ async fn get_player_events(
         .sessions
         .get(&session_id)
         .ok_or(ApiRouteError::SessionNotFound(session_id))?;
-    Ok(Json(session.player_events(
+    Ok(Json(session.session.player_events(
         player_id(query.player_id),
         TickId::new(query.from_tick),
     )?))
@@ -501,7 +583,7 @@ async fn save_session(
         .get(&session_id)
         .ok_or(ApiRouteError::SessionNotFound(session_id))?;
     Ok(Json(SaveSessionResponse {
-        snapshot_json: session.snapshot_json()?,
+        snapshot_json: session.session.snapshot_json()?,
     }))
 }
 
@@ -510,8 +592,9 @@ async fn load_session(
     Json(request): Json<LoadSessionRequest>,
 ) -> Result<(StatusCode, Json<ApiSessionSummary>), ApiRouteError> {
     let session = GameSession::from_snapshot_json(&request.snapshot_json)?;
+    let session = ManagedSession::new(session);
     let summary = api_session_summary(&session);
-    let session_id = session.session_id();
+    let session_id = session.session.session_id();
     let mut sessions = lock_sessions(&state)?;
     sessions.next_session_id = sessions.next_session_id.max(session_id.0 + 1);
     sessions.sessions.insert(session_id, session);
@@ -531,6 +614,36 @@ async fn get_session_metrics(
     Ok(Json(session_metrics(session)))
 }
 
+async fn run_session_loop(state: Arc<ApiState>, session_id: SessionId) {
+    loop {
+        tokio::time::sleep(Duration::from_millis(RUN_LOOP_INTERVAL_MS)).await;
+
+        let mut sessions = match lock_sessions(&state) {
+            Ok(sessions) => sessions,
+            Err(_) => return,
+        };
+        let Some(session) = sessions.sessions.get_mut(&session_id) else {
+            return;
+        };
+
+        if session.control_state != SessionControlState::Running {
+            return;
+        }
+
+        if session.session.state().victory != VictoryState::Ongoing {
+            session.control_state = SessionControlState::Paused;
+            return;
+        }
+
+        session.session.advance_tick();
+
+        if session.session.state().victory != VictoryState::Ongoing {
+            session.control_state = SessionControlState::Paused;
+            return;
+        }
+    }
+}
+
 fn render_taxonomy_html() -> String {
     TAXONOMY_HTML_TEMPLATE
         .replace("/*__TAXONOMY_CSS__*/", TAXONOMY_CSS)
@@ -539,6 +652,8 @@ fn render_taxonomy_html() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use axum::Router;
     use axum::{
         body::{Body, to_bytes},
@@ -550,8 +665,8 @@ mod tests {
 
     use super::{
         ApiBootstrapError, ApiServerConfig, ApiSessionSummary, LoadSessionRequest,
-        SaveSessionResponse, SessionMetrics, StepSessionRequest, app_router, load_session_summary,
-        starter_session_summary,
+        SaveSessionResponse, SessionControlState, SessionMetrics, StepSessionRequest, app_router,
+        load_session_summary, starter_session_summary,
     };
     use starforge_content::ContentError;
     use starforge_core::{EventKind, EventRecord, PlayerStateView, TickId};
@@ -649,6 +764,57 @@ mod tests {
         .await;
 
         assert_eq!(fetched, created);
+    }
+
+    #[tokio::test]
+    async fn run_and_pause_routes_control_background_advancement() {
+        let app = app_router(ApiServerConfig::default());
+
+        let _: ApiSessionSummary = response_json(
+            app.clone(),
+            request(Method::POST, "/sessions", Body::empty()),
+            StatusCode::CREATED,
+        )
+        .await;
+
+        let running: ApiSessionSummary = response_json(
+            app.clone(),
+            request(Method::POST, "/sessions/1/run", Body::empty()),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(running.control_state, SessionControlState::Running);
+
+        tokio::time::sleep(Duration::from_millis(180)).await;
+
+        let advanced: ApiSessionSummary = response_json(
+            app.clone(),
+            request(Method::GET, "/sessions/1", Body::empty()),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(advanced.control_state, SessionControlState::Running);
+        assert!(advanced.current_tick.0 >= 1);
+
+        let paused: ApiSessionSummary = response_json(
+            app.clone(),
+            request(Method::POST, "/sessions/1/pause", Body::empty()),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(paused.control_state, SessionControlState::Paused);
+        let paused_tick = paused.current_tick;
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let settled: ApiSessionSummary = response_json(
+            app,
+            request(Method::GET, "/sessions/1", Body::empty()),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(settled.control_state, SessionControlState::Paused);
+        assert_eq!(settled.current_tick, paused_tick);
     }
 
     #[tokio::test]

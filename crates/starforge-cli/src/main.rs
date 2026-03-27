@@ -8,7 +8,9 @@ use clap::Parser;
 use reqwest::blocking::Client;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use starforge_api::{ApiSessionSummary, IssueCommandRequest, StepSessionRequest};
+use starforge_api::{
+    ApiSessionSummary, IssueCommandRequest, SessionControlState, StepSessionRequest,
+};
 use starforge_core::{
     CommandCollapseState, CommandKind, EventRecord, GameSession, InfrastructureCondition,
     LocationConnection, LocationView, PlayerId, PlayerStateView, SessionId, TickId, TransitKind,
@@ -49,6 +51,8 @@ fn run_file(command: CliCommand) -> Result<(), DynError> {
             args.common.player,
             TickId::new(args.from_tick),
         ),
+        CliCommand::Run(args) => cmd_run(&args.session),
+        CliCommand::Pause(args) => cmd_pause(&args.session),
         CliCommand::Step(args) => cmd_step(&args.session.session, args.ticks),
         CliCommand::Survey(args) => cmd_mutate(
             &args.common.session.session,
@@ -154,6 +158,8 @@ fn run_api(api_base: &str, command: CliCommand) -> Result<(), DynError> {
             args.common.player,
             TickId::new(args.from_tick),
         ),
+        CliCommand::Run(args) => cmd_run_api(api_base, &args.session),
+        CliCommand::Pause(args) => cmd_pause_api(api_base, &args.session),
         CliCommand::Step(args) => cmd_step_api(api_base, &args.session.session, args.ticks),
         CliCommand::Survey(args) => cmd_mutate_api(
             api_base,
@@ -318,6 +324,7 @@ fn cmd_status(session_path: &Path, player_id: PlayerId) -> Result<(), DynError> 
     let view = session.player_view(player_id)?;
     print_status(
         &session_path.display().to_string(),
+        None,
         &session.state().victory,
         player_id,
         &view,
@@ -364,6 +371,24 @@ fn cmd_events(session_path: &Path, player_id: PlayerId, from_tick: TickId) -> Re
     }
 
     Ok(())
+}
+
+fn cmd_run(session_path: &Path) -> Result<(), DynError> {
+    let _ = load_session(session_path)?;
+    Err(format!(
+        "continuous run is only available in API mode; use `step --session {} --ticks <N>` for file-backed sessions",
+        session_path.display()
+    )
+    .into())
+}
+
+fn cmd_pause(session_path: &Path) -> Result<(), DynError> {
+    let _ = load_session(session_path)?;
+    Err(format!(
+        "continuous run is only available in API mode; file-backed session {} advances only when stepped explicitly",
+        session_path.display()
+    )
+    .into())
 }
 
 fn cmd_step(session_path: &Path, ticks: u32) -> Result<(), DynError> {
@@ -435,6 +460,7 @@ fn cmd_status_api(api_base: &str, session_arg: &Path, player_id: PlayerId) -> Re
     let view = api_player_view(&client, api_base, session_id, player_id)?;
     print_status(
         &format!("#{} @ {}", session_id.0, normalize_api_base(api_base)),
+        Some(summary.control_state),
         &summary.victory,
         player_id,
         &view,
@@ -487,6 +513,48 @@ fn cmd_events_api(
         println!("[{}] {}", event.tick_id.0, render_event(&event.kind));
     }
 
+    Ok(())
+}
+
+fn cmd_run_api(api_base: &str, session_arg: &Path) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let summary: ApiSessionSummary = api_post_empty(
+        &client,
+        &format!(
+            "{}/sessions/{}/run",
+            normalize_api_base(api_base),
+            session_id.0
+        ),
+    )?;
+    println!(
+        "Session #{} is {} at tick {}. {}",
+        session_id.0,
+        render_control_state(summary.control_state),
+        summary.current_tick.0,
+        render_victory(&summary.victory)
+    );
+    Ok(())
+}
+
+fn cmd_pause_api(api_base: &str, session_arg: &Path) -> Result<(), DynError> {
+    let client = api_client();
+    let session_id = parse_session_id_arg(session_arg)?;
+    let summary: ApiSessionSummary = api_post_empty(
+        &client,
+        &format!(
+            "{}/sessions/{}/pause",
+            normalize_api_base(api_base),
+            session_id.0
+        ),
+    )?;
+    println!(
+        "Session #{} is {} at tick {}. {}",
+        session_id.0,
+        render_control_state(summary.control_state),
+        summary.current_tick.0,
+        render_victory(&summary.victory)
+    );
     Ok(())
 }
 
@@ -634,6 +702,7 @@ fn api_response_json<T: DeserializeOwned>(
 
 fn print_status(
     session_label: &str,
+    control_state: Option<SessionControlState>,
     victory: &VictoryState,
     player_id: PlayerId,
     view: &PlayerStateView,
@@ -646,6 +715,9 @@ fn print_status(
 
     println!("Session: {session_label}");
     println!("Tick: {}", view.tick_id.0);
+    if let Some(control_state) = control_state {
+        println!("Control: {}", render_control_state(control_state));
+    }
     println!("Victory: {}", render_victory(victory));
     println!("Player: P{}", player_id.0);
     println!("Model tier: {}", view.model_tier);
@@ -873,6 +945,13 @@ fn render_victory(victory: &VictoryState) -> String {
     match victory {
         VictoryState::Ongoing => "victory=ongoing".to_owned(),
         VictoryState::Won { winner } => format!("victory=won by P{}", winner.0),
+    }
+}
+
+fn render_control_state(control_state: SessionControlState) -> &'static str {
+    match control_state {
+        SessionControlState::Running => "running",
+        SessionControlState::Paused => "paused",
     }
 }
 

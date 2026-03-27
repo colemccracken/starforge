@@ -8,6 +8,8 @@ const AFTER_HELP: &str = r#"Command Quick Reference:
   starforge-cli status --session <PATH> --player <PLAYER>
   starforge-cli map --session <PATH> --player <PLAYER>
   starforge-cli events --session <PATH> --player <PLAYER> [--from-tick <TICK>]
+  starforge-cli run --session <PATH>
+  starforge-cli pause --session <PATH>
   starforge-cli step --session <PATH> --ticks <TICKS>
   starforge-cli survey --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli pacify --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
@@ -61,6 +63,8 @@ pub(crate) enum Command {
     Status(SessionPlayerArgs),
     Map(SessionPlayerArgs),
     Events(EventsArgs),
+    Run(SessionArg),
+    Pause(SessionArg),
     Step(StepArgs),
     Survey(TransitArgs),
     Pacify(TransitArgs),
@@ -260,6 +264,32 @@ mod tests {
                         session: PathBuf::from("session.json"),
                     },
                     player: PlayerId::new(1),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn run_accepts_short_session_alias() {
+        assert_eq!(
+            parse_ok(&["starforge-cli", "run", "-s", "session.json"]),
+            Cli {
+                api_base: None,
+                command: Command::Run(SessionArg {
+                    session: PathBuf::from("session.json"),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn pause_accepts_short_session_alias() {
+        assert_eq!(
+            parse_ok(&["starforge-cli", "pause", "-s", "session.json"]),
+            Cli {
+                api_base: None,
+                command: Command::Pause(SessionArg {
+                    session: PathBuf::from("session.json"),
                 }),
             }
         );

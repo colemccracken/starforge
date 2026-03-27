@@ -224,3 +224,42 @@ fn api_mode_map_shows_known_routes() {
         .stdout(predicate::str::contains("<->"))
         .stdout(predicate::str::contains("unavailable via API-backed CLI").not());
 }
+
+#[test]
+fn api_mode_run_and_pause_commands_work() {
+    let api_base = spawn_api_server();
+
+    cli_command()
+        .args(["--api-base", &api_base, "new"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created remote session #1"));
+
+    cli_command()
+        .args(["--api-base", &api_base, "run", "--session", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Session #1 is running"));
+
+    thread::sleep(Duration::from_millis(150));
+
+    cli_command()
+        .args(["--api-base", &api_base, "pause", "--session", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Session #1 is paused"));
+
+    cli_command()
+        .args([
+            "--api-base",
+            &api_base,
+            "status",
+            "--session",
+            "1",
+            "--player",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Control: paused"));
+}
