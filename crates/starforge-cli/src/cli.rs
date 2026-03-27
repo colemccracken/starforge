@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use starforge_core::{InfrastructureKind, PlayerId, RelayStatus};
+use starforge_core::{InfrastructureKind, PlayerId, RelayStatus, ResearchBranch};
 
 const AFTER_HELP: &str = r#"Command Quick Reference:
   starforge-cli new [--session <PATH>]
@@ -23,7 +23,8 @@ const AFTER_HELP: &str = r#"Command Quick Reference:
   starforge-cli build --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
   starforge-cli repair --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
   starforge-cli relay --session <PATH> --player <PLAYER> --location <LOCATION> --status <STATUS>
-  starforge-cli budget --session <PATH> --player <PLAYER> --upkeep <N> --training <N> --agents <N>
+  starforge-cli budget --session <PATH> --player <PLAYER> --upkeep <N> --research <N> --training <N> --agents <N>
+  starforge-cli research --session <PATH> --player <PLAYER> --branch <BRANCH> --target-level <LEVEL>
   starforge-cli train --session <PATH> --player <PLAYER> --target-tier <TIER>
 
 HTTP API mode:
@@ -42,7 +43,7 @@ Prototype loop:
   3. `survey` nearby neutral worlds, then `step` until arrival.
   4. If a surveyed world has `remnant=true`, use `pacify` and `step`.
   5. `claim` cleared neutral worlds, then expand with `build` and `repair`.
-  6. Raise training budget with `budget`, then start `train` for tiers 2 through 5.
+  6. Use `budget` to reserve research and training throughput, then use `research` and `train`.
   7. A completed tier 5 training run ends the match immediately.
 "#;
 
@@ -83,6 +84,7 @@ pub(crate) enum Command {
     Repair(InfrastructureArgs),
     Relay(RelayArgs),
     Budget(BudgetArgs),
+    Research(ResearchArgs),
     Train(TrainArgs),
 }
 
@@ -187,9 +189,21 @@ pub(crate) struct BudgetArgs {
     #[arg(long, value_name = "N")]
     pub(crate) upkeep: u32,
     #[arg(long, value_name = "N")]
+    pub(crate) research: u32,
+    #[arg(long, value_name = "N")]
     pub(crate) training: u32,
     #[arg(long, value_name = "N")]
     pub(crate) agents: u32,
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ResearchArgs {
+    #[command(flatten)]
+    pub(crate) common: SessionPlayerArgs,
+    #[arg(long, value_name = "BRANCH", value_parser = parse_research_branch)]
+    pub(crate) branch: ResearchBranch,
+    #[arg(long, value_name = "LEVEL")]
+    pub(crate) target_level: u8,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -229,6 +243,16 @@ fn parse_relay_status(value: &str) -> Result<RelayStatus, String> {
     }
 }
 
+fn parse_research_branch(value: &str) -> Result<ResearchBranch, String> {
+    match normalize_token(value).as_str() {
+        "industry" => Ok(ResearchBranch::Industry),
+        "models" | "model" => Ok(ResearchBranch::Models),
+        "warfare" => Ok(ResearchBranch::Warfare),
+        "resilience" => Ok(ResearchBranch::Resilience),
+        _ => Err(format!("unknown research branch '{value}'")),
+    }
+}
+
 fn normalize_token(value: &str) -> String {
     value
         .chars()
@@ -242,12 +266,13 @@ mod tests {
     use std::path::PathBuf;
 
     use clap::{Parser, error::ErrorKind};
-    use starforge_core::{InfrastructureKind, PlayerId, RelayStatus};
+    use starforge_core::{InfrastructureKind, PlayerId, RelayStatus, ResearchBranch};
 
     use super::{
         BudgetArgs, Cli, Command, EventsArgs, InfrastructureArgs, LoadArgs, NewArgs, RelayArgs,
-        SaveArgs, ScenarioRunArgs, SessionArg, SessionPlayerArgs, StepArgs, TrainArgs, TransitArgs,
-        parse_infrastructure_kind, parse_relay_status,
+        ResearchArgs, SaveArgs, ScenarioRunArgs, SessionArg, SessionPlayerArgs, StepArgs,
+        TrainArgs, TransitArgs, parse_infrastructure_kind, parse_relay_status,
+        parse_research_branch,
     };
 
     fn parse_ok(args: &[&str]) -> Cli {
@@ -802,6 +827,8 @@ mod tests {
                 "1",
                 "--upkeep",
                 "10",
+                "--research",
+                "15",
                 "--training",
                 "20",
                 "--agents",
@@ -817,8 +844,40 @@ mod tests {
                         player: PlayerId::new(1),
                     },
                     upkeep: 10,
+                    research: 15,
                     training: 20,
                     agents: 30,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn research_accepts_named_branch_and_target_level() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "research",
+                "-s",
+                "session.json",
+                "-p",
+                "1",
+                "--branch",
+                "warfare",
+                "--target-level",
+                "2",
+            ]),
+            Cli {
+                api_base: None,
+                command: Command::Research(ResearchArgs {
+                    common: SessionPlayerArgs {
+                        session: SessionArg {
+                            session: PathBuf::from("session.json"),
+                        },
+                        player: PlayerId::new(1),
+                    },
+                    branch: ResearchBranch::Warfare,
+                    target_level: 2,
                 }),
             }
         );
@@ -929,6 +988,16 @@ mod tests {
         assert_eq!(
             parse_relay_status("disconnected"),
             Ok(RelayStatus::Disconnected)
+        );
+    }
+
+    #[test]
+    fn research_branch_parser_accepts_variants() {
+        assert_eq!(parse_research_branch("models"), Ok(ResearchBranch::Models));
+        assert_eq!(parse_research_branch("Model"), Ok(ResearchBranch::Models));
+        assert_eq!(
+            parse_research_branch("war-fare"),
+            Ok(ResearchBranch::Warfare)
         );
     }
 }

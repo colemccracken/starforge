@@ -253,6 +253,7 @@ pub struct PlayerState {
     pub model_tier: u8,
     pub economy: PlayerEconomyState,
     pub throughput: ThroughputBudget,
+    pub research: PlayerResearchState,
     pub visibility: VisibilityState,
     pub training: Option<TrainingRunState>,
     pub collapse: CommandCollapseState,
@@ -266,6 +267,7 @@ impl PlayerState {
             model_tier: 1,
             economy: PlayerEconomyState::default(),
             throughput: ThroughputBudget::default(),
+            research: PlayerResearchState::default(),
             visibility: VisibilityState::default(),
             training: None,
             collapse: CommandCollapseState::Stable,
@@ -405,6 +407,7 @@ pub struct PlayerStateView {
     pub model_tier: u8,
     pub economy: PlayerEconomyState,
     pub throughput: ThroughputBudget,
+    pub research: PlayerResearchState,
     pub training: Option<TrainingRunState>,
     pub collapse: CommandCollapseState,
     pub visibility: VisibilityState,
@@ -470,6 +473,7 @@ pub enum TransitKind {
 pub struct ThroughputBudget {
     pub reserved_for_model_upkeep: u32,
     pub reserved_for_training: u32,
+    pub reserved_for_research: u32,
     pub reserved_for_agents: u32,
     pub available: u32,
 }
@@ -482,6 +486,65 @@ pub struct TrainingRunState {
     pub required_training_throughput: u32,
     #[serde(default)]
     pub ascension_site_location_id: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerResearchState {
+    pub industry_level: u8,
+    pub models_level: u8,
+    pub warfare_level: u8,
+    pub resilience_level: u8,
+    pub active_project: Option<ResearchProjectState>,
+}
+
+impl PlayerResearchState {
+    pub const fn level_for(&self, branch: ResearchBranch) -> u8 {
+        match branch {
+            ResearchBranch::Industry => self.industry_level,
+            ResearchBranch::Models => self.models_level,
+            ResearchBranch::Warfare => self.warfare_level,
+            ResearchBranch::Resilience => self.resilience_level,
+        }
+    }
+
+    pub fn set_level(&mut self, branch: ResearchBranch, level: u8) {
+        match branch {
+            ResearchBranch::Industry => self.industry_level = level,
+            ResearchBranch::Models => self.models_level = level,
+            ResearchBranch::Warfare => self.warfare_level = level,
+            ResearchBranch::Resilience => self.resilience_level = level,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResearchProjectState {
+    pub branch: ResearchBranch,
+    pub target_level: u8,
+    pub progress_ticks: u32,
+    pub required_ticks: u32,
+    pub required_research_throughput: u32,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum ResearchBranch {
+    Industry,
+    Models,
+    Warfare,
+    Resilience,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

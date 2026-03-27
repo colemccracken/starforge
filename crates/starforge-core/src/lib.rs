@@ -19,9 +19,10 @@ pub use state::{
     HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition, InfrastructureKind,
     InfrastructureProjectKind, InfrastructureProjectState, InfrastructureSeed, InfrastructureState,
     LocationEconomyState, LocationKind, LocationState, LocationView, LocationVisibility,
-    PlayerEconomyState, PlayerState, PlayerStateView, RelayStatus, ResourceRichness,
-    ResourceStockpiles, StrategicPosition, TerritoryState, ThreatLevel, ThroughputBudget,
-    TrainingRunState, TransitKind, TransitState, TransitView, VictoryState, VisibilityState,
+    PlayerEconomyState, PlayerResearchState, PlayerState, PlayerStateView, RelayStatus,
+    ResearchBranch, ResearchProjectState, ResourceRichness, ResourceStockpiles, StrategicPosition,
+    TerritoryState, ThreatLevel, ThroughputBudget, TrainingRunState, TransitKind, TransitState,
+    TransitView, VictoryState, VisibilityState,
 };
 
 #[cfg(test)]
@@ -30,9 +31,9 @@ mod tests {
         BuildCapacity, CommandCollapseState, CommandEnvelope, CommandKind, EnergyPotential,
         EventKind, GameConfig, GameSession, HostileRemnantKind, HostileRemnantSeed,
         InfrastructureCondition, InfrastructureKind, InfrastructureSeed, LocationConnection,
-        LocationKind, LocationVisibility, MatchSeed, PlayerId, RelayStatus, ResourceRichness,
-        ResourceStockpiles, ScenarioConfig, SessionId, StartingLocation, StrategicPosition,
-        TerritoryState, ThreatLevel, TickId, VictoryState,
+        LocationKind, LocationVisibility, MatchSeed, PlayerId, RelayStatus, ResearchBranch,
+        ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, StartingLocation,
+        StrategicPosition, TerritoryState, ThreatLevel, TickId, VictoryState,
     };
 
     fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
@@ -77,6 +78,7 @@ mod tests {
                 infrastructure_seed(InfrastructureKind::EnergyProducer),
                 infrastructure_seed(InfrastructureKind::Datacenter),
                 infrastructure_seed(InfrastructureKind::RelayUplink),
+                infrastructure_seed(InfrastructureKind::MilitaryWorks),
             ],
             hostile_remnant: None,
         }
@@ -816,6 +818,7 @@ mod tests {
             apply_at_tick: TickId::default(),
             command: CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep: 10,
+                reserved_for_research: 0,
                 reserved_for_training: 20,
                 reserved_for_agents: 5,
             },
@@ -838,6 +841,7 @@ mod tests {
             &event.kind,
             EventKind::ThroughputBudgetSet {
                 reserved_for_model_upkeep: 10,
+                reserved_for_research: 0,
                 reserved_for_training: 20,
                 reserved_for_agents: 5,
                 available: 50,
@@ -860,6 +864,7 @@ mod tests {
             apply_at_tick: TickId::default(),
             command: CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep: 20,
+                reserved_for_research: 0,
                 reserved_for_training: 20,
                 reserved_for_agents: 20,
             },
@@ -894,6 +899,7 @@ mod tests {
                 apply_at_tick: TickId::default(),
                 command: CommandKind::SetThroughputBudget {
                     reserved_for_model_upkeep: 10,
+                    reserved_for_research: 0,
                     reserved_for_training: 5,
                     reserved_for_agents: 0,
                 },
@@ -941,6 +947,7 @@ mod tests {
             apply_at_tick: TickId::new(2),
             command: CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep: 8,
+                reserved_for_research: 0,
                 reserved_for_training: 3,
                 reserved_for_agents: 0,
             },
@@ -1005,6 +1012,7 @@ mod tests {
             apply_at_tick: TickId::new(2),
             command: CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep: 7,
+                reserved_for_research: 0,
                 reserved_for_training: 4,
                 reserved_for_agents: 0,
             },
@@ -1110,6 +1118,7 @@ mod tests {
             apply_at_tick: TickId::new(2),
             command: CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep: 11,
+                reserved_for_research: 0,
                 reserved_for_training: 9,
                 reserved_for_agents: 0,
             },
@@ -2032,6 +2041,7 @@ mod tests {
                 apply_at_tick: TickId::default(),
                 command: CommandKind::SetThroughputBudget {
                     reserved_for_model_upkeep: 10,
+                    reserved_for_research: 0,
                     reserved_for_training: 5,
                     reserved_for_agents: 0,
                 },
@@ -2623,6 +2633,57 @@ mod tests {
     }
 
     #[test]
+    fn assault_can_be_repelled_by_superior_defense() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            defended_enemy_world_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+
+        session.advance_ticks(10);
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchAssaultTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("assault transit should be accepted");
+
+        session.advance_ticks(10);
+
+        let defended_location = session
+            .state()
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("defended location should exist");
+        assert_eq!(defended_location.territory, TerritoryState::Owned);
+        assert_eq!(defended_location.controller, Some(PlayerId::new(2)));
+        assert_eq!(session.state().victory, VictoryState::Ongoing);
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::AssaultRepelled {
+                location_id: 2,
+                attacker_id,
+                defender_id,
+            } if *attacker_id == PlayerId::new(1) && *defender_id == PlayerId::new(2)
+        )));
+    }
+
+    #[test]
     fn strategic_strike_destroys_undefended_enemy_world_and_ends_match() {
         let mut session = GameSession::new(
             SessionId::new(1),
@@ -2719,6 +2780,7 @@ mod tests {
                     PlayerId::new(1),
                     CommandKind::SetThroughputBudget {
                         reserved_for_model_upkeep: 0,
+                        reserved_for_research: 0,
                         reserved_for_training: training_requirement,
                         reserved_for_agents: 0,
                     },
@@ -2757,6 +2819,59 @@ mod tests {
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
             EventKind::VictoryDeclared { winner, .. } if *winner == PlayerId::new(1)
+        )));
+    }
+
+    #[test]
+    fn research_projects_complete_and_unlock_branch_levels() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            economy_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::SetThroughputBudget {
+                    reserved_for_model_upkeep: 0,
+                    reserved_for_research: 24,
+                    reserved_for_training: 0,
+                    reserved_for_agents: 0,
+                },
+            )
+            .expect("research budget should be accepted");
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::StartResearchProject {
+                    branch: ResearchBranch::Industry,
+                    target_level: 1,
+                },
+            )
+            .expect("research project should be accepted");
+
+        session.advance_ticks(8);
+
+        let player = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should load");
+        assert_eq!(player.research.industry_level, 1);
+        assert!(player.research.active_project.is_none());
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ResearchProjectStarted {
+                branch: ResearchBranch::Industry,
+                target_level: 1,
+                ..
+            }
+        )));
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ResearchProjectCompleted {
+                branch: ResearchBranch::Industry,
+                achieved_level: 1,
+            }
         )));
     }
 
@@ -2896,6 +3011,7 @@ mod tests {
                     PlayerId::new(1),
                     CommandKind::SetThroughputBudget {
                         reserved_for_model_upkeep: 0,
+                        reserved_for_research: 0,
                         reserved_for_training,
                         reserved_for_agents: 0,
                     },
@@ -2915,6 +3031,7 @@ mod tests {
                 PlayerId::new(1),
                 CommandKind::SetThroughputBudget {
                     reserved_for_model_upkeep: 0,
+                    reserved_for_research: 0,
                     reserved_for_training: 70,
                     reserved_for_agents: 0,
                 },

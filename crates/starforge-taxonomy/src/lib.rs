@@ -1017,6 +1017,7 @@ mod tests {
                 PlayerId::new(1),
                 CommandKind::SetThroughputBudget {
                     reserved_for_model_upkeep: 0,
+                    reserved_for_research: 0,
                     reserved_for_training: 20,
                     reserved_for_agents: 0,
                 },
@@ -1150,6 +1151,7 @@ mod tests {
                 infrastructure_seed(InfrastructureKind::EnergyProducer),
                 infrastructure_seed(InfrastructureKind::Datacenter),
                 infrastructure_seed(InfrastructureKind::RelayUplink),
+                infrastructure_seed(InfrastructureKind::MilitaryWorks),
             ],
             hostile_remnant: None,
         }

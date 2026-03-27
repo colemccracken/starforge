@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoStaticStr};
 
-use crate::{InfrastructureKind, PlayerId, RelayStatus, SessionId, TickId};
+use crate::{InfrastructureKind, PlayerId, RelayStatus, ResearchBranch, SessionId, TickId};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CommandEnvelope {
@@ -21,6 +21,7 @@ pub enum CommandKind {
     SetThroughputBudget {
         reserved_for_model_upkeep: u32,
         reserved_for_training: u32,
+        reserved_for_research: u32,
         reserved_for_agents: u32,
     },
     AssignAgent {
@@ -70,6 +71,10 @@ pub enum CommandKind {
     StartTrainingRun {
         target_tier: u8,
     },
+    StartResearchProject {
+        branch: ResearchBranch,
+        target_level: u8,
+    },
 }
 
 #[derive(
@@ -103,6 +108,7 @@ pub enum CommandDiscriminant {
     DispatchStrategicStrike,
     SurveyLocation,
     StartTrainingRun,
+    StartResearchProject,
 }
 
 impl CommandDiscriminant {
@@ -132,6 +138,7 @@ impl From<&CommandKind> for CommandDiscriminant {
             CommandKind::DispatchStrategicStrike { .. } => Self::DispatchStrategicStrike,
             CommandKind::SurveyLocation { .. } => Self::SurveyLocation,
             CommandKind::StartTrainingRun { .. } => Self::StartTrainingRun,
+            CommandKind::StartResearchProject { .. } => Self::StartResearchProject,
         }
     }
 }

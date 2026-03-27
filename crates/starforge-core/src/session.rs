@@ -4,9 +4,9 @@ use crate::{
     BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, EventRecord,
     GameConfig, GameState, InfrastructureCondition, InfrastructureKind, InfrastructureProjectKind,
     InfrastructureProjectState, LocationConnection, LocationKind, LocationState, LocationView,
-    LocationVisibility, PlayerId, PlayerStateView, RelayStatus, ReplayLog, ResourceRichness,
-    ResourceStockpiles, ScenarioConfig, SessionId, Snapshot, StrategicPosition, TerritoryState,
-    TickId, TransitKind, TransitState, TransitView, ValidationError,
+    LocationVisibility, PlayerId, PlayerStateView, RelayStatus, ReplayLog, ResearchBranch,
+    ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, Snapshot, StrategicPosition,
+    TerritoryState, TickId, TransitKind, TransitState, TransitView, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +200,10 @@ impl GameSession {
         }
 
         for event in self.advance_training_runs() {
+            self.event_log.push(event);
+        }
+
+        for event in self.advance_research_projects() {
             self.event_log.push(event);
         }
 
@@ -398,6 +402,7 @@ impl GameSession {
             model_tier: player.model_tier,
             economy: player.economy.clone(),
             throughput: player.throughput.clone(),
+            research: player.research.clone(),
             training: player.training.clone(),
             collapse: player.collapse.clone(),
             visibility: player.visibility.clone(),
@@ -447,11 +452,13 @@ impl GameSession {
             CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep,
                 reserved_for_training,
+                reserved_for_research,
                 reserved_for_agents,
             } => self.apply_set_throughput_budget(
                 player_id,
                 reserved_for_model_upkeep,
                 reserved_for_training,
+                reserved_for_research,
                 reserved_for_agents,
             ),
             CommandKind::AssignAgent {
@@ -531,6 +538,10 @@ impl GameSession {
             CommandKind::StartTrainingRun { target_tier } => {
                 self.apply_start_training_run(player_id, target_tier)
             }
+            CommandKind::StartResearchProject {
+                branch,
+                target_level,
+            } => self.apply_start_research_project(player_id, branch, target_level),
         };
 
         match applied {
@@ -569,11 +580,14 @@ impl GameSession {
         player_id: PlayerId,
         reserved_for_model_upkeep: u32,
         reserved_for_training: u32,
+        reserved_for_research: u32,
         reserved_for_agents: u32,
     ) -> Result<Vec<EventKind>, ValidationError> {
         let player = self.player_state_mut(player_id)?;
-        let total_reserved =
-            reserved_for_model_upkeep + reserved_for_training + reserved_for_agents;
+        let total_reserved = reserved_for_model_upkeep
+            + reserved_for_training
+            + reserved_for_research
+            + reserved_for_agents;
 
         if total_reserved > player.economy.usable_throughput {
             return Err(ValidationError {
@@ -584,11 +598,13 @@ impl GameSession {
 
         player.throughput.reserved_for_model_upkeep = reserved_for_model_upkeep;
         player.throughput.reserved_for_training = reserved_for_training;
+        player.throughput.reserved_for_research = reserved_for_research;
         player.throughput.reserved_for_agents = reserved_for_agents;
 
         Ok(vec![EventKind::ThroughputBudgetSet {
             reserved_for_model_upkeep,
             reserved_for_training,
+            reserved_for_research,
             reserved_for_agents,
             available: player.throughput.available,
         }])
@@ -607,6 +623,7 @@ impl GameSession {
             .available
             .saturating_sub(player.throughput.reserved_for_model_upkeep)
             .saturating_sub(player.throughput.reserved_for_training)
+            .saturating_sub(player.throughput.reserved_for_research)
             .saturating_sub(player.throughput.reserved_for_agents);
 
         if reserved_throughput > remaining_capacity {
@@ -764,9 +781,15 @@ impl GameSession {
                 target_index,
             )
         };
+        let industry_level = self.player_state(player_id)?.research.industry_level;
 
-        let cost = repair_cost(&infrastructure_kind, &condition);
-        let duration_ticks = repair_duration(build_capacity, has_environmental_hazard, &condition);
+        let cost = repair_cost(&infrastructure_kind, &condition, industry_level);
+        let duration_ticks = repair_duration(
+            build_capacity,
+            has_environmental_hazard,
+            &condition,
+            industry_level,
+        );
 
         if connected_to_empire {
             let available = self
@@ -833,8 +856,7 @@ impl GameSession {
         if !is_buildable_infrastructure(&infrastructure_kind) {
             return Err(ValidationError {
                 code: "unsupported_construction_kind".to_owned(),
-                message: "construction is currently limited to core economic infrastructure"
-                    .to_owned(),
+                message: "construction kind is not currently supported".to_owned(),
             });
         }
 
@@ -868,12 +890,14 @@ impl GameSession {
                 location.has_environmental_hazard,
             )
         };
+        let industry_level = self.player_state(player_id)?.research.industry_level;
 
-        let cost = construction_cost(&infrastructure_kind);
+        let cost = construction_cost(&infrastructure_kind, industry_level);
         let duration_ticks = construction_duration(
             build_capacity,
             has_environmental_hazard,
             &infrastructure_kind,
+            industry_level,
         );
 
         if connected_to_empire {
@@ -948,6 +972,7 @@ impl GameSession {
 
         self.controlled_location_state(player_id, origin_location_id)?;
         self.location_exists(destination_location_id)?;
+        self.validate_transit_origin(player_id, origin_location_id, &kind)?;
         self.validate_transit_destination(player_id, destination_location_id, &kind)?;
         if kind == TransitKind::StrategicStrike {
             self.pay_strategic_strike_cost(player_id, origin_location_id)?;
@@ -982,6 +1007,39 @@ impl GameSession {
             eta_tick,
             kind,
         }])
+    }
+
+    fn validate_transit_origin(
+        &self,
+        player_id: PlayerId,
+        origin_location_id: u32,
+        kind: &TransitKind,
+    ) -> Result<(), ValidationError> {
+        let origin = self.controlled_location_state(player_id, origin_location_id)?;
+
+        match kind {
+            TransitKind::Assault => {
+                if self.assault_strength(player_id, origin) == 0 {
+                    return Err(ValidationError {
+                        code: "missing_assault_staging".to_owned(),
+                        message: "assaults require an operational military works or shipyard at the origin"
+                            .to_owned(),
+                    });
+                }
+            }
+            TransitKind::StrategicStrike => {
+                if self.strategic_strike_strength(player_id, origin) == 0 {
+                    return Err(ValidationError {
+                        code: "missing_strike_staging".to_owned(),
+                        message: "strategic strikes require an operational military works or shipyard at the origin"
+                            .to_owned(),
+                    });
+                }
+            }
+            TransitKind::Survey | TransitKind::Pacification | TransitKind::Claim => {}
+        }
+
+        Ok(())
     }
 
     fn apply_survey_location(
@@ -1069,18 +1127,7 @@ impl GameSession {
             });
         }
 
-        if !self.state.locations.iter().any(|location| {
-            location.controller == Some(player_id)
-                && location.territory == TerritoryState::Owned
-                && location.infrastructure.iter().any(|infrastructure| {
-                    infrastructure.kind == InfrastructureKind::CommandNexus
-                        && infrastructure.condition != InfrastructureCondition::Offline
-                })
-                && location.infrastructure.iter().any(|infrastructure| {
-                    infrastructure.kind == InfrastructureKind::Datacenter
-                        && infrastructure.condition != InfrastructureCondition::Offline
-                })
-        }) {
+        if !self.player_has_research_site(player_id) {
             return Err(ValidationError {
                 code: "missing_training_site".to_owned(),
                 message: "training requires at least one owned world with an operational command nexus and datacenter"
@@ -1097,7 +1144,7 @@ impl GameSession {
         } else {
             None
         };
-        let required_ticks = training_duration_ticks(target_tier);
+        let required_ticks = training_duration_ticks(target_tier, player.research.models_level);
         let player = self.player_state_mut(player_id)?;
         player.training = Some(crate::TrainingRunState {
             target_tier,
@@ -1122,6 +1169,71 @@ impl GameSession {
         }
 
         Ok(events)
+    }
+
+    fn apply_start_research_project(
+        &mut self,
+        player_id: PlayerId,
+        branch: ResearchBranch,
+        target_level: u8,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        if !(1..=3).contains(&target_level) {
+            return Err(ValidationError {
+                code: "invalid_target_level".to_owned(),
+                message: "research targets must be between levels 1 and 3".to_owned(),
+            });
+        }
+
+        let player = self.player_state(player_id)?;
+        if player.research.active_project.is_some() {
+            return Err(ValidationError {
+                code: "research_already_active".to_owned(),
+                message: "a research project is already active for this player".to_owned(),
+            });
+        }
+
+        let current_level = player.research.level_for(branch);
+        if target_level != current_level.saturating_add(1) {
+            return Err(ValidationError {
+                code: "invalid_research_progression".to_owned(),
+                message: "research projects must target the next unlocked level".to_owned(),
+            });
+        }
+
+        let required_research_throughput = research_throughput_requirement(target_level);
+        if player.throughput.reserved_for_research < required_research_throughput {
+            return Err(ValidationError {
+                code: "insufficient_research_budget".to_owned(),
+                message:
+                    "reserved research throughput is below the requirement for the requested level"
+                        .to_owned(),
+            });
+        }
+
+        if !self.player_has_research_site(player_id) {
+            return Err(ValidationError {
+                code: "missing_research_site".to_owned(),
+                message: "research requires at least one owned world with an operational command nexus and datacenter"
+                    .to_owned(),
+            });
+        }
+
+        let required_ticks = research_duration_ticks(target_level);
+        let player = self.player_state_mut(player_id)?;
+        player.research.active_project = Some(crate::ResearchProjectState {
+            branch,
+            target_level,
+            progress_ticks: 0,
+            required_ticks,
+            required_research_throughput,
+        });
+
+        Ok(vec![EventKind::ResearchProjectStarted {
+            branch,
+            target_level,
+            required_research_throughput,
+            required_ticks,
+        }])
     }
 
     fn handle_arrived_transit(&mut self, transit: TransitState) {
@@ -1175,9 +1287,11 @@ impl GameSession {
                 }
             }
             TransitKind::Assault => {
-                if let Ok(events) =
-                    self.resolve_assault_arrival(transit.player_id, transit.destination_id)
-                {
+                if let Ok(events) = self.resolve_assault_arrival(
+                    transit.player_id,
+                    transit.origin_id,
+                    transit.destination_id,
+                ) {
                     for kind in events {
                         self.event_log.push(EventRecord {
                             tick_id: self.state.tick_id,
@@ -1188,9 +1302,11 @@ impl GameSession {
                 }
             }
             TransitKind::StrategicStrike => {
-                if let Ok(events) =
-                    self.resolve_strategic_strike_arrival(transit.player_id, transit.destination_id)
-                {
+                if let Ok(events) = self.resolve_strategic_strike_arrival(
+                    transit.player_id,
+                    transit.origin_id,
+                    transit.destination_id,
+                ) {
                     for kind in events {
                         self.event_log.push(EventRecord {
                             tick_id: self.state.tick_id,
@@ -1451,10 +1567,15 @@ impl GameSession {
     fn resolve_assault_arrival(
         &mut self,
         player_id: PlayerId,
+        origin_location_id: u32,
         destination_location_id: u32,
     ) -> Result<Vec<EventKind>, ValidationError> {
+        let attack_strength = {
+            let origin = self.controlled_location_state(player_id, origin_location_id)?;
+            self.assault_strength(player_id, origin)
+        };
         let defender_id = {
-            let location = self.location_state_mut(destination_location_id)?;
+            let location = self.location_state(destination_location_id)?;
             if location.controller == Some(player_id) && location.territory == TerritoryState::Owned
             {
                 return Err(ValidationError {
@@ -1472,21 +1593,44 @@ impl GameSession {
                 });
             }
 
-            let defender_id = location.controller;
+            location.controller
+        };
+
+        let defender_id = defender_id.expect("enemy-controlled destination should have a defender");
+        let defense_strength = {
+            let destination = self.location_state(destination_location_id)?;
+            self.defense_strength(defender_id, destination)
+        };
+
+        if attack_strength <= defense_strength {
+            return Ok(vec![EventKind::AssaultRepelled {
+                location_id: destination_location_id,
+                attacker_id: player_id,
+                defender_id,
+            }]);
+        }
+
+        let takeover_ticks = takeover_duration_ticks(
+            player_id,
+            defender_id,
+            attack_strength,
+            defense_strength,
+            &self.state,
+        );
+
+        {
+            let location = self.location_state_mut(destination_location_id)?;
             location.territory = TerritoryState::Contested;
             crate::state::push_unique_sorted_player_id(&mut location.contesting_players, player_id);
             location.takeover_attacker = Some(player_id);
-            location.takeover_ticks_remaining = takeover_duration_ticks();
+            location.takeover_ticks_remaining = takeover_ticks;
             location.pacification_ticks_remaining = 0;
-            defender_id
-        };
+        }
 
         if let Ok(attacker) = self.player_state_mut(player_id) {
             attacker.visibility.mark_contested(destination_location_id);
         }
-        if let Some(defender_id) = defender_id
-            && let Ok(defender) = self.player_state_mut(defender_id)
-        {
+        if let Ok(defender) = self.player_state_mut(defender_id) {
             defender.visibility.mark_contested(destination_location_id);
         }
 
@@ -1495,7 +1639,7 @@ impl GameSession {
         let mut events = vec![EventKind::LocationContested {
             location_id: destination_location_id,
             attacker_id: player_id,
-            defender_id,
+            defender_id: Some(defender_id),
         }];
         events.extend(self.economy_updated_events());
         Ok(events)
@@ -1504,8 +1648,14 @@ impl GameSession {
     fn resolve_strategic_strike_arrival(
         &mut self,
         player_id: PlayerId,
+        origin_location_id: u32,
         destination_location_id: u32,
     ) -> Result<Vec<EventKind>, ValidationError> {
+        let strike_strength = {
+            let origin = self.controlled_location_state(player_id, origin_location_id)?;
+            self.strategic_strike_strength(player_id, origin)
+        };
+
         let (defender_id, intercepted) = {
             let location = self.location_state(destination_location_id)?;
             if location.territory == TerritoryState::Destroyed {
@@ -1530,10 +1680,8 @@ impl GameSession {
                 });
             }
 
-            let intercepted = location.infrastructure.iter().any(|infrastructure| {
-                infrastructure.kind == InfrastructureKind::GroundDefenseSite
-                    && infrastructure.condition != InfrastructureCondition::Offline
-            });
+            let intercepted =
+                self.strategic_strike_defense_strength(defender_id, location) >= strike_strength;
 
             (defender_id, intercepted)
         };
@@ -1805,6 +1953,56 @@ impl GameSession {
         events
     }
 
+    fn advance_research_projects(&mut self) -> Vec<EventRecord> {
+        let mut events = Vec::new();
+
+        for index in 0..self.state.players.len() {
+            let player_id = self.state.players[index].player_id;
+            let Some(project_snapshot) = self.state.players[index].research.active_project.clone()
+            else {
+                continue;
+            };
+
+            let insufficient_research_budget =
+                self.state.players[index].throughput.reserved_for_research
+                    < project_snapshot.required_research_throughput;
+            let insufficient_available_throughput = self.state.players[index].throughput.available
+                < project_snapshot.required_research_throughput;
+
+            if insufficient_research_budget
+                || insufficient_available_throughput
+                || !self.player_has_research_site(player_id)
+            {
+                continue;
+            }
+
+            let player = &mut self.state.players[index];
+            let Some(project) = player.research.active_project.as_mut() else {
+                continue;
+            };
+            project.progress_ticks = project.progress_ticks.saturating_add(1);
+            if project.progress_ticks < project.required_ticks {
+                continue;
+            }
+
+            let branch = project.branch;
+            let achieved_level = project.target_level;
+            player.research.set_level(branch, achieved_level);
+            player.research.active_project = None;
+
+            events.push(EventRecord {
+                tick_id: self.state.tick_id,
+                player_id: Some(player_id),
+                kind: EventKind::ResearchProjectCompleted {
+                    branch,
+                    achieved_level,
+                },
+            });
+        }
+
+        events
+    }
+
     fn advance_command_collapse(&mut self) -> Vec<EventRecord> {
         if self.state.victory != crate::VictoryState::Ongoing {
             return Vec::new();
@@ -1840,16 +2038,17 @@ impl GameSession {
             match self.state.players[index].collapse.clone() {
                 crate::CommandCollapseState::Stable => {
                     if !has_active_nexus {
+                        let ticks_remaining = collapse_countdown_ticks(
+                            self.state.players[index].research.resilience_level,
+                        );
                         self.state.players[index].collapse =
-                            crate::CommandCollapseState::Collapsing {
-                                ticks_remaining: collapse_countdown_ticks(),
-                            };
+                            crate::CommandCollapseState::Collapsing { ticks_remaining };
                         events.push(EventRecord {
                             tick_id: self.state.tick_id,
                             player_id: Some(player_id),
                             kind: EventKind::CommandCollapseStarted {
                                 player_id,
-                                ticks_remaining: collapse_countdown_ticks(),
+                                ticks_remaining,
                             },
                         });
                     }
@@ -1865,9 +2064,11 @@ impl GameSession {
                     } else if ticks_remaining <= 1 {
                         self.state.players[index].collapse = crate::CommandCollapseState::Defeated;
                         self.state.players[index].training = None;
+                        self.state.players[index].research.active_project = None;
                         self.state.players[index].agents.clear();
                         self.state.players[index].throughput.reserved_for_agents = 0;
                         self.state.players[index].throughput.reserved_for_training = 0;
+                        self.state.players[index].throughput.reserved_for_research = 0;
                         defeated_players.push(player_id);
                         events.push(EventRecord {
                             tick_id: self.state.tick_id,
@@ -2174,6 +2375,85 @@ impl GameSession {
         }
     }
 
+    fn player_has_research_site(&self, player_id: PlayerId) -> bool {
+        self.state.locations.iter().any(|location| {
+            location.controller == Some(player_id)
+                && location.territory == TerritoryState::Owned
+                && location.infrastructure.iter().any(|infrastructure| {
+                    infrastructure.kind == InfrastructureKind::CommandNexus
+                        && infrastructure.condition != InfrastructureCondition::Offline
+                })
+                && location.infrastructure.iter().any(|infrastructure| {
+                    infrastructure.kind == InfrastructureKind::Datacenter
+                        && infrastructure.condition != InfrastructureCondition::Offline
+                })
+        })
+    }
+
+    fn assault_strength(&self, player_id: PlayerId, origin: &LocationState) -> u32 {
+        let warfare_level = self
+            .player_state(player_id)
+            .map(|player| player.research.warfare_level)
+            .unwrap_or(0);
+
+        operational_infrastructure_count(origin, InfrastructureKind::MilitaryWorks)
+            .saturating_mul(4)
+            .saturating_add(
+                operational_infrastructure_count(origin, InfrastructureKind::ShipyardRing)
+                    .saturating_mul(5),
+            )
+            .saturating_add(u32::from(warfare_level).saturating_mul(2))
+    }
+
+    fn defense_strength(&self, player_id: PlayerId, location: &LocationState) -> u32 {
+        let resilience_level = self
+            .player_state(player_id)
+            .map(|player| player.research.resilience_level)
+            .unwrap_or(0);
+
+        operational_infrastructure_count(location, InfrastructureKind::CommandNexus)
+            .saturating_mul(2)
+            .saturating_add(operational_infrastructure_count(
+                location,
+                InfrastructureKind::MilitaryWorks,
+            ))
+            .saturating_add(
+                operational_infrastructure_count(location, InfrastructureKind::GroundDefenseSite)
+                    .saturating_mul(4),
+            )
+            .saturating_add(u32::from(resilience_level).saturating_mul(2))
+    }
+
+    fn strategic_strike_strength(&self, player_id: PlayerId, origin: &LocationState) -> u32 {
+        let warfare_level = self
+            .player_state(player_id)
+            .map(|player| player.research.warfare_level)
+            .unwrap_or(0);
+
+        operational_infrastructure_count(origin, InfrastructureKind::ShipyardRing)
+            .saturating_mul(5)
+            .saturating_add(
+                operational_infrastructure_count(origin, InfrastructureKind::MilitaryWorks)
+                    .saturating_mul(3),
+            )
+            .saturating_add(u32::from(warfare_level).saturating_mul(2))
+    }
+
+    fn strategic_strike_defense_strength(
+        &self,
+        player_id: PlayerId,
+        location: &LocationState,
+    ) -> u32 {
+        let resilience_level = self
+            .player_state(player_id)
+            .map(|player| player.research.resilience_level)
+            .unwrap_or(0);
+
+        operational_infrastructure_count(location, InfrastructureKind::GroundDefenseSite)
+            .saturating_mul(4)
+            .saturating_add(u32::from(resilience_level).saturating_mul(2))
+    }
+
     fn pay_strategic_strike_cost(
         &mut self,
         player_id: PlayerId,
@@ -2183,7 +2463,8 @@ impl GameSession {
             .controlled_location_state(player_id, origin_location_id)?
             .economy
             .connected_to_empire;
-        let cost = strategic_strike_cost();
+        let warfare_level = self.player_state(player_id)?.research.warfare_level;
+        let cost = strategic_strike_cost(warfare_level);
 
         if connected_to_empire {
             let available = self
@@ -2239,7 +2520,9 @@ impl GameSession {
             | EventKind::TransitArrived { .. }
             | EventKind::LocationSurveyed { .. }
             | EventKind::TrainingRunStarted { .. }
-            | EventKind::TrainingRunCompleted { .. } => event.player_id == Some(player_id),
+            | EventKind::TrainingRunCompleted { .. }
+            | EventKind::ResearchProjectStarted { .. }
+            | EventKind::ResearchProjectCompleted { .. } => event.player_id == Some(player_id),
             EventKind::LocationRegistered { .. } => event.player_id == Some(player_id),
             EventKind::RelayStatusChanged { location_id, .. }
             | EventKind::HostileRemnantCleared { location_id }
@@ -2269,6 +2552,11 @@ impl GameSession {
                     || self.location_is_observed_by_player(player_id, *location_id)
             }
             EventKind::StrategicStrikeIntercepted {
+                location_id,
+                attacker_id,
+                defender_id,
+            }
+            | EventKind::AssaultRepelled {
                 location_id,
                 attacker_id,
                 defender_id,
@@ -2723,12 +3011,41 @@ fn training_throughput_requirement(target_tier: u8) -> u32 {
     }
 }
 
-fn training_duration_ticks(target_tier: u8) -> u32 {
-    match target_tier {
+fn training_duration_ticks(target_tier: u8, models_level: u8) -> u32 {
+    let base_ticks = match target_tier {
         2 => 8,
         3 => 12,
         4 => 16,
         5 => 20,
+        _ => u32::MAX,
+    };
+    let modifier_percent = match models_level {
+        0 => 100,
+        1 => 90,
+        2 => 80,
+        _ => 70,
+    };
+
+    base_ticks
+        .saturating_mul(modifier_percent)
+        .saturating_div(100)
+        .max(1)
+}
+
+fn research_throughput_requirement(target_level: u8) -> u32 {
+    match target_level {
+        1 => 16,
+        2 => 24,
+        3 => 34,
+        _ => u32::MAX,
+    }
+}
+
+fn research_duration_ticks(target_level: u8) -> u32 {
+    match target_level {
+        1 => 8,
+        2 => 12,
+        3 => 16,
         _ => u32::MAX,
     }
 }
@@ -2743,29 +3060,50 @@ fn minimum_worlds_for_tier(target_tier: u8) -> usize {
     }
 }
 
-const fn takeover_duration_ticks() -> u32 {
-    8
+fn takeover_duration_ticks(
+    attacker_id: PlayerId,
+    defender_id: PlayerId,
+    attack_strength: u32,
+    defense_strength: u32,
+    state: &GameState,
+) -> u32 {
+    let attack_margin = attack_strength.saturating_sub(defense_strength);
+    let attacker_warfare =
+        player_research_level_in_state(state, attacker_id, ResearchBranch::Warfare);
+    let defender_resilience =
+        player_research_level_in_state(state, defender_id, ResearchBranch::Resilience);
+    let duration = 8_i32 + i32::from(defender_resilience)
+        - i32::from(attacker_warfare)
+        - i32::try_from(attack_margin / 2).unwrap_or(i32::MAX);
+
+    duration.clamp(4, 12) as u32
 }
 
 const fn pacification_duration_ticks() -> u32 {
     12
 }
 
-const fn collapse_countdown_ticks() -> u64 {
-    8
+const fn collapse_countdown_ticks(resilience_level: u8) -> u64 {
+    8 + (resilience_level as u64) * 2
 }
 
-fn strategic_strike_cost() -> ResourceStockpiles {
-    ResourceStockpiles {
-        common_materials: 120,
-        volatiles: 80,
-        rare_materials: 30,
-    }
+fn strategic_strike_cost(warfare_level: u8) -> ResourceStockpiles {
+    scale_cost_by_percent(
+        ResourceStockpiles {
+            common_materials: 120,
+            volatiles: 80,
+            rare_materials: 30,
+        },
+        100u32
+            .saturating_sub(u32::from(warfare_level).saturating_mul(10))
+            .max(70),
+    )
 }
 
 fn repair_cost(
     infrastructure_kind: &InfrastructureKind,
     condition: &InfrastructureCondition,
+    industry_level: u8,
 ) -> ResourceStockpiles {
     let base_cost = match infrastructure_kind {
         InfrastructureKind::CommandNexus => ResourceStockpiles {
@@ -2816,17 +3154,23 @@ fn repair_cost(
         InfrastructureCondition::Offline => 2,
     };
 
-    ResourceStockpiles {
-        common_materials: base_cost.common_materials.saturating_mul(multiplier),
-        volatiles: base_cost.volatiles.saturating_mul(multiplier),
-        rare_materials: base_cost.rare_materials.saturating_mul(multiplier),
-    }
+    scale_cost_by_percent(
+        ResourceStockpiles {
+            common_materials: base_cost.common_materials.saturating_mul(multiplier),
+            volatiles: base_cost.volatiles.saturating_mul(multiplier),
+            rare_materials: base_cost.rare_materials.saturating_mul(multiplier),
+        },
+        100u32
+            .saturating_sub(u32::from(industry_level).saturating_mul(10))
+            .max(70),
+    )
 }
 
 fn repair_duration(
     build_capacity: BuildCapacity,
     has_environmental_hazard: bool,
     condition: &InfrastructureCondition,
+    industry_level: u8,
 ) -> u32 {
     let base_duration: i32 = match condition {
         InfrastructureCondition::Operational => 0,
@@ -2839,12 +3183,16 @@ fn repair_duration(
         BuildCapacity::Expansive => -1,
     };
     let hazard_adjustment = if has_environmental_hazard { 1 } else { 0 };
+    let industry_adjustment = -(i32::from(industry_level));
 
-    (base_duration + build_adjustment + hazard_adjustment).max(1) as u32
+    (base_duration + build_adjustment + hazard_adjustment + industry_adjustment).max(1) as u32
 }
 
-fn construction_cost(infrastructure_kind: &InfrastructureKind) -> ResourceStockpiles {
-    match infrastructure_kind {
+fn construction_cost(
+    infrastructure_kind: &InfrastructureKind,
+    industry_level: u8,
+) -> ResourceStockpiles {
+    let base_cost = match infrastructure_kind {
         InfrastructureKind::MiningSite => ResourceStockpiles {
             common_materials: 70,
             volatiles: 20,
@@ -2865,27 +3213,47 @@ fn construction_cost(infrastructure_kind: &InfrastructureKind) -> ResourceStockp
             volatiles: 15,
             rare_materials: 4,
         },
-        InfrastructureKind::CommandNexus
-        | InfrastructureKind::ShipyardRing
-        | InfrastructureKind::MilitaryWorks
-        | InfrastructureKind::GroundDefenseSite => ResourceStockpiles::default(),
-    }
+        InfrastructureKind::ShipyardRing => ResourceStockpiles {
+            common_materials: 120,
+            volatiles: 40,
+            rare_materials: 16,
+        },
+        InfrastructureKind::MilitaryWorks => ResourceStockpiles {
+            common_materials: 110,
+            volatiles: 35,
+            rare_materials: 12,
+        },
+        InfrastructureKind::GroundDefenseSite => ResourceStockpiles {
+            common_materials: 90,
+            volatiles: 30,
+            rare_materials: 10,
+        },
+        InfrastructureKind::CommandNexus => ResourceStockpiles::default(),
+    };
+
+    scale_cost_by_percent(
+        base_cost,
+        100u32
+            .saturating_sub(u32::from(industry_level).saturating_mul(10))
+            .max(70),
+    )
 }
 
 fn construction_duration(
     build_capacity: BuildCapacity,
     has_environmental_hazard: bool,
     infrastructure_kind: &InfrastructureKind,
+    industry_level: u8,
 ) -> u32 {
     let base_duration: i32 = match infrastructure_kind {
         InfrastructureKind::MiningSite => 3,
         InfrastructureKind::EnergyProducer => 4,
         InfrastructureKind::Datacenter => 4,
         InfrastructureKind::RelayUplink => 3,
-        InfrastructureKind::CommandNexus
-        | InfrastructureKind::ShipyardRing
-        | InfrastructureKind::MilitaryWorks
-        | InfrastructureKind::GroundDefenseSite => 0,
+        InfrastructureKind::ShipyardRing => 6,
+        InfrastructureKind::MilitaryWorks => 5,
+        InfrastructureKind::GroundDefenseSite => 5,
+        InfrastructureKind::CommandNexus => 0,
     };
     let build_adjustment = match build_capacity {
         BuildCapacity::Constrained => 1,
@@ -2893,8 +3261,9 @@ fn construction_duration(
         BuildCapacity::Expansive => -1,
     };
     let hazard_adjustment = if has_environmental_hazard { 1 } else { 0 };
+    let industry_adjustment = -(i32::from(industry_level));
 
-    (base_duration + build_adjustment + hazard_adjustment).max(1) as u32
+    (base_duration + build_adjustment + hazard_adjustment + industry_adjustment).max(1) as u32
 }
 
 const fn is_buildable_infrastructure(infrastructure_kind: &InfrastructureKind) -> bool {
@@ -2904,6 +3273,9 @@ const fn is_buildable_infrastructure(infrastructure_kind: &InfrastructureKind) -
             | InfrastructureKind::EnergyProducer
             | InfrastructureKind::Datacenter
             | InfrastructureKind::RelayUplink
+            | InfrastructureKind::ShipyardRing
+            | InfrastructureKind::MilitaryWorks
+            | InfrastructureKind::GroundDefenseSite
     )
 }
 
@@ -2912,4 +3284,42 @@ const fn is_unique_infrastructure(infrastructure_kind: &InfrastructureKind) -> b
         infrastructure_kind,
         InfrastructureKind::CommandNexus | InfrastructureKind::RelayUplink
     )
+}
+
+fn scale_cost_by_percent(cost: ResourceStockpiles, percent: u32) -> ResourceStockpiles {
+    ResourceStockpiles {
+        common_materials: cost
+            .common_materials
+            .saturating_mul(percent)
+            .saturating_div(100),
+        volatiles: cost.volatiles.saturating_mul(percent).saturating_div(100),
+        rare_materials: cost
+            .rare_materials
+            .saturating_mul(percent)
+            .saturating_div(100),
+    }
+}
+
+fn player_research_level_in_state(
+    state: &GameState,
+    player_id: PlayerId,
+    branch: ResearchBranch,
+) -> u8 {
+    state
+        .players
+        .iter()
+        .find(|player| player.player_id == player_id)
+        .map(|player| player.research.level_for(branch))
+        .unwrap_or(0)
+}
+
+fn operational_infrastructure_count(location: &LocationState, kind: InfrastructureKind) -> u32 {
+    location
+        .infrastructure
+        .iter()
+        .filter(|infrastructure| {
+            infrastructure.kind == kind
+                && infrastructure.condition != InfrastructureCondition::Offline
+        })
+        .count() as u32
 }

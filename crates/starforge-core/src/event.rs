@@ -3,7 +3,7 @@ use strum::{EnumIter, IntoStaticStr};
 
 use crate::{
     CommandKind, InfrastructureCondition, InfrastructureKind, MatchSeed, PlayerId, RelayStatus,
-    ResourceStockpiles, TickId, TransitKind, ValidationError,
+    ResearchBranch, ResourceStockpiles, TickId, TransitKind, ValidationError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +36,7 @@ pub enum EventKind {
     ThroughputBudgetSet {
         reserved_for_model_upkeep: u32,
         reserved_for_training: u32,
+        reserved_for_research: u32,
         reserved_for_agents: u32,
         available: u32,
     },
@@ -110,6 +111,11 @@ pub enum EventKind {
         attacker_id: PlayerId,
         defender_id: Option<PlayerId>,
     },
+    AssaultRepelled {
+        location_id: u32,
+        attacker_id: PlayerId,
+        defender_id: PlayerId,
+    },
     LocationCaptured {
         location_id: u32,
         attacker_id: PlayerId,
@@ -146,8 +152,18 @@ pub enum EventKind {
         required_training_throughput: u32,
         required_ticks: u32,
     },
+    ResearchProjectStarted {
+        branch: ResearchBranch,
+        target_level: u8,
+        required_research_throughput: u32,
+        required_ticks: u32,
+    },
     TrainingRunCompleted {
         achieved_tier: u8,
+    },
+    ResearchProjectCompleted {
+        branch: ResearchBranch,
+        achieved_level: u8,
     },
     CommandCollapseStarted {
         player_id: PlayerId,
@@ -203,6 +219,7 @@ pub enum EventDiscriminant {
     HostileRemnantCleared,
     LocationClaimed,
     LocationContested,
+    AssaultRepelled,
     LocationCaptured,
     StrategicStrikeIntercepted,
     LocationDestroyed,
@@ -210,7 +227,9 @@ pub enum EventDiscriminant {
     AscensionStarted,
     AscensionInterrupted,
     TrainingRunStarted,
+    ResearchProjectStarted,
     TrainingRunCompleted,
+    ResearchProjectCompleted,
     CommandCollapseStarted,
     CommandCollapseRecovered,
     PlayerDefeated,
@@ -254,6 +273,7 @@ impl From<&EventKind> for EventDiscriminant {
             EventKind::HostileRemnantCleared { .. } => Self::HostileRemnantCleared,
             EventKind::LocationClaimed { .. } => Self::LocationClaimed,
             EventKind::LocationContested { .. } => Self::LocationContested,
+            EventKind::AssaultRepelled { .. } => Self::AssaultRepelled,
             EventKind::LocationCaptured { .. } => Self::LocationCaptured,
             EventKind::StrategicStrikeIntercepted { .. } => Self::StrategicStrikeIntercepted,
             EventKind::LocationDestroyed { .. } => Self::LocationDestroyed,
@@ -261,7 +281,9 @@ impl From<&EventKind> for EventDiscriminant {
             EventKind::AscensionStarted { .. } => Self::AscensionStarted,
             EventKind::AscensionInterrupted { .. } => Self::AscensionInterrupted,
             EventKind::TrainingRunStarted { .. } => Self::TrainingRunStarted,
+            EventKind::ResearchProjectStarted { .. } => Self::ResearchProjectStarted,
             EventKind::TrainingRunCompleted { .. } => Self::TrainingRunCompleted,
+            EventKind::ResearchProjectCompleted { .. } => Self::ResearchProjectCompleted,
             EventKind::CommandCollapseStarted { .. } => Self::CommandCollapseStarted,
             EventKind::CommandCollapseRecovered { .. } => Self::CommandCollapseRecovered,
             EventKind::PlayerDefeated { .. } => Self::PlayerDefeated,

@@ -14,8 +14,8 @@ use starforge_api::{
 };
 use starforge_core::{
     CommandCollapseState, CommandKind, EventRecord, GameSession, InfrastructureCondition,
-    LocationConnection, LocationView, PlayerId, PlayerStateView, SessionId, TickId, TransitKind,
-    VictoryState,
+    LocationConnection, LocationView, PlayerId, PlayerStateView, ResearchBranch, SessionId, TickId,
+    TransitKind, VictoryState,
 };
 use starforge_scenarios::{
     ScenarioHarness, default_ruleset_path, default_scenario_path, load_harness,
@@ -144,10 +144,20 @@ fn run_file(command: CliCommand) -> Result<(), DynError> {
             args.common.player,
             CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep: args.upkeep,
+                reserved_for_research: args.research,
                 reserved_for_training: args.training,
                 reserved_for_agents: args.agents,
             },
             "throughput budget updated",
+        ),
+        CliCommand::Research(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::StartResearchProject {
+                branch: args.branch,
+                target_level: args.target_level,
+            },
+            "research project started",
         ),
         CliCommand::Train(args) => cmd_mutate(
             &args.common.session.session,
@@ -272,10 +282,21 @@ fn run_api(api_base: &str, command: CliCommand) -> Result<(), DynError> {
             args.common.player,
             CommandKind::SetThroughputBudget {
                 reserved_for_model_upkeep: args.upkeep,
+                reserved_for_research: args.research,
                 reserved_for_training: args.training,
                 reserved_for_agents: args.agents,
             },
             "throughput budget updated",
+        ),
+        CliCommand::Research(args) => cmd_mutate_api(
+            api_base,
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::StartResearchProject {
+                branch: args.branch,
+                target_level: args.target_level,
+            },
+            "research project started",
         ),
         CliCommand::Train(args) => cmd_mutate_api(
             api_base,
@@ -881,12 +902,31 @@ fn print_status(
     println!("Collapse: {}", render_collapse(&view.collapse));
     println!("Owned worlds: {}", owned_count);
     println!(
-        "Throughput: available={} upkeep={} training={} agents={}",
+        "Throughput: available={} upkeep={} research={} training={} agents={}",
         view.throughput.available,
         view.throughput.reserved_for_model_upkeep,
+        view.throughput.reserved_for_research,
         view.throughput.reserved_for_training,
         view.throughput.reserved_for_agents
     );
+    println!(
+        "Research: industry={} models={} warfare={} resilience={}",
+        view.research.industry_level,
+        view.research.models_level,
+        view.research.warfare_level,
+        view.research.resilience_level
+    );
+    match &view.research.active_project {
+        Some(project) => println!(
+            "Research project: {} level {} progress {}/{} requiring {} research throughput",
+            render_research_branch(project.branch),
+            project.target_level,
+            project.progress_ticks,
+            project.required_ticks,
+            project.required_research_throughput
+        ),
+        None => println!("Research project: none"),
+    }
     println!(
         "Connected economy: energy={} datacenter={} usable_throughput={}",
         view.economy.total_connected_energy,
@@ -1255,12 +1295,17 @@ fn render_event(event: &starforge_core::EventKind) -> String {
         }
         starforge_core::EventKind::ThroughputBudgetSet {
             reserved_for_model_upkeep,
+            reserved_for_research,
             reserved_for_training,
             reserved_for_agents,
             available,
         } => format!(
-            "throughput budget upkeep={} training={} agents={} available={}",
-            reserved_for_model_upkeep, reserved_for_training, reserved_for_agents, available
+            "throughput budget upkeep={} research={} training={} agents={} available={}",
+            reserved_for_model_upkeep,
+            reserved_for_research,
+            reserved_for_training,
+            reserved_for_agents,
+            available
         ),
         starforge_core::EventKind::EconomyUpdated {
             player_id,
@@ -1375,6 +1420,14 @@ fn render_event(event: &starforge_core::EventKind) -> String {
             ),
             None => format!("location #{} contested by P{}", location_id, attacker_id.0),
         },
+        starforge_core::EventKind::AssaultRepelled {
+            location_id,
+            attacker_id,
+            defender_id,
+        } => format!(
+            "assault on #{} by P{} repelled by P{}",
+            location_id, attacker_id.0, defender_id.0
+        ),
         starforge_core::EventKind::LocationCaptured {
             location_id,
             attacker_id,
@@ -1418,6 +1471,26 @@ fn render_event(event: &starforge_core::EventKind) -> String {
         starforge_core::EventKind::TrainingRunCompleted { achieved_tier } => {
             format!("training run completed; achieved tier {}", achieved_tier)
         }
+        starforge_core::EventKind::ResearchProjectStarted {
+            branch,
+            target_level,
+            required_research_throughput,
+            required_ticks,
+        } => format!(
+            "research started for {} level {} requiring {} throughput for {} ticks",
+            render_research_branch(*branch),
+            target_level,
+            required_research_throughput,
+            required_ticks
+        ),
+        starforge_core::EventKind::ResearchProjectCompleted {
+            branch,
+            achieved_level,
+        } => format!(
+            "research completed for {} level {}",
+            render_research_branch(*branch),
+            achieved_level
+        ),
         starforge_core::EventKind::AscensionStarted {
             player_id,
             location_id,
@@ -1451,5 +1524,14 @@ fn render_event(event: &starforge_core::EventKind) -> String {
         starforge_core::EventKind::VictoryDeclared { winner, reason } => {
             format!("victory declared for P{} ({})", winner.0, reason)
         }
+    }
+}
+
+fn render_research_branch(branch: ResearchBranch) -> &'static str {
+    match branch {
+        ResearchBranch::Industry => "industry",
+        ResearchBranch::Models => "models",
+        ResearchBranch::Warfare => "warfare",
+        ResearchBranch::Resilience => "resilience",
     }
 }

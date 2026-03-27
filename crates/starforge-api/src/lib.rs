@@ -832,6 +832,7 @@ mod tests {
             "command": {
                 "SetThroughputBudget": {
                     "reserved_for_model_upkeep": 0,
+                    "reserved_for_research": 0,
                     "reserved_for_training": 20,
                     "reserved_for_agents": 0
                 }

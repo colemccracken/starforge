@@ -172,6 +172,14 @@ entries:
     status: implemented
     implementation_keys:
       - event_kind.location_contested
+  - id: events.assault_repelled
+    title: AssaultRepelled
+    kind: event
+    parent_id: events
+    summary: Emits when an incoming assault fails against the defender's military strength.
+    status: implemented
+    implementation_keys:
+      - event_kind.assault_repelled
   - id: events.location_captured
     title: LocationCaptured
     kind: event
@@ -220,6 +228,22 @@ entries:
     status: implemented
     implementation_keys:
       - event_kind.training_run_completed
+  - id: events.research_project_started
+    title: ResearchProjectStarted
+    kind: event
+    parent_id: events
+    summary: Emits branch, target level, required research throughput, and duration for a new research project.
+    status: implemented
+    implementation_keys:
+      - event_kind.research_project_started
+  - id: events.research_project_completed
+    title: ResearchProjectCompleted
+    kind: event
+    parent_id: events
+    summary: Emits the completed branch and achieved level when research finishes.
+    status: implemented
+    implementation_keys:
+      - event_kind.research_project_completed
   - id: events.ascension_started
     title: AscensionStarted
     kind: event

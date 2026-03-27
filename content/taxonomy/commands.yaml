@@ -24,12 +24,22 @@ entries:
     title: SetThroughputBudget
     kind: command
     parent_id: commands
-    summary: Reserves current usable throughput for upkeep, training, and active agents.
+    summary: Reserves current usable throughput for upkeep, research, training, and active agents.
     status: implemented
     implementation_keys:
       - command_kind.set_throughput_budget
     related_ids:
       - economy.throughput
+  - id: commands.start_research_project
+    title: StartResearchProject
+    kind: command
+    parent_id: commands
+    summary: Starts the next level of a research branch when research budget and site requirements are met.
+    status: implemented
+    implementation_keys:
+      - command_kind.start_research_project
+    related_ids:
+      - ai.training_runs
   - id: commands.assign_agent
     title: AssignAgent
     kind: command
