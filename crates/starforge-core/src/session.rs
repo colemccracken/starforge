@@ -487,6 +487,15 @@ impl GameSession {
                 destination_location_id,
                 TransitKind::Assault,
             ),
+            CommandKind::DispatchStrategicStrike {
+                origin_location_id,
+                destination_location_id,
+            } => self.apply_dispatch_transit(
+                player_id,
+                origin_location_id,
+                destination_location_id,
+                TransitKind::StrategicStrike,
+            ),
             CommandKind::SurveyLocation { location_id } => {
                 self.apply_survey_location(player_id, location_id)
             }
@@ -911,6 +920,10 @@ impl GameSession {
         self.controlled_location_state(player_id, origin_location_id)?;
         self.location_exists(destination_location_id)?;
         self.validate_transit_destination(player_id, destination_location_id, &kind)?;
+        if kind == TransitKind::StrategicStrike {
+            self.pay_strategic_strike_cost(player_id, origin_location_id)?;
+            self.state.recompute_economy();
+        }
         let travel_time_ticks =
             self.travel_time_between(origin_location_id, destination_location_id)?;
         let transit_id = self.state.next_transit_id();
@@ -1125,6 +1138,19 @@ impl GameSession {
                     }
                 }
             }
+            TransitKind::StrategicStrike => {
+                if let Ok(events) =
+                    self.resolve_strategic_strike_arrival(transit.player_id, transit.destination_id)
+                {
+                    for kind in events {
+                        self.event_log.push(EventRecord {
+                            tick_id: self.state.tick_id,
+                            player_id: Some(transit.player_id),
+                            kind,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -1245,6 +1271,46 @@ impl GameSession {
                         code: "destination_not_enemy_controlled".to_owned(),
                         message:
                             "assault expeditions currently require an enemy-controlled destination"
+                                .to_owned(),
+                    });
+                }
+
+                Ok(())
+            }
+            TransitKind::StrategicStrike => {
+                let location = self.location_state(destination_location_id)?;
+                if !self
+                    .player_state(player_id)?
+                    .visibility
+                    .surveyed_location_ids
+                    .contains(&destination_location_id)
+                {
+                    return Err(ValidationError {
+                        code: "location_not_surveyed".to_owned(),
+                        message: "strategic strikes require a previously surveyed destination"
+                            .to_owned(),
+                    });
+                }
+
+                if location.territory == TerritoryState::Destroyed {
+                    return Err(ValidationError {
+                        code: "location_already_destroyed".to_owned(),
+                        message: "strategic strikes cannot target a destroyed world".to_owned(),
+                    });
+                }
+
+                if location.controller == Some(player_id) {
+                    return Err(ValidationError {
+                        code: "location_already_controlled".to_owned(),
+                        message: "strategic strikes require a non-owned destination".to_owned(),
+                    });
+                }
+
+                if location.controller.is_none() {
+                    return Err(ValidationError {
+                        code: "destination_not_enemy_controlled".to_owned(),
+                        message:
+                            "strategic strikes currently require an enemy-controlled destination"
                                 .to_owned(),
                     });
                 }
@@ -1383,6 +1449,86 @@ impl GameSession {
             defender_id,
         }];
         events.extend(self.economy_updated_events());
+        Ok(events)
+    }
+
+    fn resolve_strategic_strike_arrival(
+        &mut self,
+        player_id: PlayerId,
+        destination_location_id: u32,
+    ) -> Result<Vec<EventKind>, ValidationError> {
+        let (defender_id, intercepted) = {
+            let location = self.location_state(destination_location_id)?;
+            if location.territory == TerritoryState::Destroyed {
+                return Err(ValidationError {
+                    code: "location_already_destroyed".to_owned(),
+                    message: "strategic strike arrival found a world already destroyed".to_owned(),
+                });
+            }
+
+            let defender_id = location.controller.ok_or(ValidationError {
+                code: "destination_not_enemy_controlled".to_owned(),
+                message: "strategic strike arrival requires an enemy-controlled destination"
+                    .to_owned(),
+            })?;
+
+            if defender_id == player_id {
+                return Err(ValidationError {
+                    code: "location_already_controlled".to_owned(),
+                    message:
+                        "strategic strike arrival found a destination controlled by the attacker"
+                            .to_owned(),
+                });
+            }
+
+            let intercepted = location.infrastructure.iter().any(|infrastructure| {
+                infrastructure.kind == InfrastructureKind::GroundDefenseSite
+                    && infrastructure.condition != InfrastructureCondition::Offline
+            });
+
+            (defender_id, intercepted)
+        };
+
+        if intercepted {
+            return Ok(vec![EventKind::StrategicStrikeIntercepted {
+                location_id: destination_location_id,
+                attacker_id: player_id,
+                defender_id,
+            }]);
+        }
+
+        {
+            let location = self.location_state_mut(destination_location_id)?;
+            location.territory = TerritoryState::Destroyed;
+            location.controller = None;
+            location.relay_status = RelayStatus::Disconnected;
+            location.infrastructure.clear();
+            location.infrastructure_projects.clear();
+            location.stockpiles = ResourceStockpiles::default();
+            location.hostile_remnant = None;
+            location.contesting_players.clear();
+            location.takeover_attacker = None;
+            location.takeover_ticks_remaining = 0;
+            location.pacification_ticks_remaining = 0;
+        }
+
+        self.state.recompute_economy();
+
+        let mut events = vec![EventKind::LocationDestroyed {
+            location_id: destination_location_id,
+            attacker_id: player_id,
+            defender_id,
+        }];
+        events.extend(self.economy_updated_events());
+
+        if let Some(winner) = self.military_conquest_winner() {
+            self.state.victory = crate::VictoryState::Won { winner };
+            events.push(EventKind::VictoryDeclared {
+                winner,
+                reason: "military_conquest".to_owned(),
+            });
+        }
+
         Ok(events)
     }
 
@@ -1689,6 +1835,56 @@ impl GameSession {
         }
     }
 
+    fn pay_strategic_strike_cost(
+        &mut self,
+        player_id: PlayerId,
+        origin_location_id: u32,
+    ) -> Result<(), ValidationError> {
+        let connected_to_empire = self
+            .controlled_location_state(player_id, origin_location_id)?
+            .economy
+            .connected_to_empire;
+        let cost = strategic_strike_cost();
+
+        if connected_to_empire {
+            let available = self
+                .state
+                .players
+                .iter()
+                .find(|player| player.player_id == player_id)
+                .ok_or(ValidationError {
+                    code: "unknown_player".to_owned(),
+                    message: "command references a player that does not exist in the session"
+                        .to_owned(),
+                })?
+                .economy
+                .connected_stockpiles
+                .clone();
+            if !available.can_cover(&cost) {
+                return Err(ValidationError {
+                    code: "insufficient_materials".to_owned(),
+                    message: "connected stockpiles cannot cover the requested strategic strike"
+                        .to_owned(),
+                });
+            }
+
+            self.spend_connected_stockpiles(player_id, origin_location_id, &cost)
+        } else {
+            let origin = self.controlled_location_state_mut(player_id, origin_location_id)?;
+            if !origin.stockpiles.can_cover(&cost) {
+                return Err(ValidationError {
+                    code: "insufficient_materials".to_owned(),
+                    message: "local stockpiles cannot cover the requested strategic strike"
+                        .to_owned(),
+                });
+            }
+
+            let mut remaining_cost = cost;
+            origin.stockpiles.spend_partial(&mut remaining_cost);
+            Ok(())
+        }
+    }
+
     fn event_visible_to_player(&self, player_id: PlayerId, event: &EventRecord) -> bool {
         match &event.kind {
             EventKind::SessionCreated { .. } | EventKind::TickAdvanced { .. } => true,
@@ -1721,6 +1917,20 @@ impl GameSession {
                 attacker_id,
                 defender_id,
                 ..
+            } => {
+                *attacker_id == player_id
+                    || *defender_id == player_id
+                    || self.location_is_observed_by_player(player_id, *location_id)
+            }
+            EventKind::StrategicStrikeIntercepted {
+                location_id,
+                attacker_id,
+                defender_id,
+            }
+            | EventKind::LocationDestroyed {
+                location_id,
+                attacker_id,
+                defender_id,
             } => {
                 *attacker_id == player_id
                     || *defender_id == player_id
@@ -2141,6 +2351,14 @@ const fn takeover_duration_ticks() -> u32 {
 
 const fn pacification_duration_ticks() -> u32 {
     12
+}
+
+fn strategic_strike_cost() -> ResourceStockpiles {
+    ResourceStockpiles {
+        common_materials: 120,
+        volatiles: 80,
+        rare_materials: 30,
+    }
 }
 
 fn repair_cost(

@@ -392,6 +392,70 @@ mod tests {
         }
     }
 
+    fn undefended_enemy_world_scenario() -> ScenarioConfig {
+        let mut enemy_world = compute_homeworld(
+            PlayerId::new(2),
+            2,
+            "Selene",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        enemy_world
+            .starting_infrastructure
+            .retain(|seed| seed.kind != InfrastructureKind::GroundDefenseSite);
+
+        ScenarioConfig {
+            starting_locations: vec![
+                compute_homeworld(
+                    PlayerId::new(1),
+                    1,
+                    "Helios",
+                    EnergyPotential::High,
+                    BuildCapacity::Expansive,
+                ),
+                enemy_world,
+            ],
+            connections: vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 10,
+            }],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn defended_enemy_world_scenario() -> ScenarioConfig {
+        let mut enemy_world = compute_homeworld(
+            PlayerId::new(2),
+            2,
+            "Selene",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        enemy_world
+            .starting_infrastructure
+            .push(infrastructure_seed(InfrastructureKind::GroundDefenseSite));
+
+        ScenarioConfig {
+            starting_locations: vec![
+                compute_homeworld(
+                    PlayerId::new(1),
+                    1,
+                    "Helios",
+                    EnergyPotential::High,
+                    BuildCapacity::Expansive,
+                ),
+                enemy_world,
+            ],
+            connections: vec![LocationConnection {
+                from_location_id: 1,
+                to_location_id: 2,
+                travel_time_ticks: 10,
+            }],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
     fn claim_fixture_scenario() -> ScenarioConfig {
         let mut scenario = survey_fixture_scenario();
         scenario.starting_locations[1].has_environmental_hazard = false;
@@ -2180,6 +2244,161 @@ mod tests {
                 winner: PlayerId::new(1),
             }
         );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::VictoryDeclared { winner, reason }
+                if *winner == PlayerId::new(1) && reason == "military_conquest"
+        )));
+    }
+
+    #[test]
+    fn strategic_strike_is_intercepted_by_ground_defenses() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            defended_enemy_world_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(10);
+
+        let stockpiles_before = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should be available")
+            .economy
+            .connected_stockpiles;
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchStrategicStrike {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("strategic strike should be accepted");
+
+        let stockpiles_after = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should be available")
+            .economy
+            .connected_stockpiles;
+        assert!(stockpiles_after.common_materials < stockpiles_before.common_materials);
+        assert!(stockpiles_after.volatiles < stockpiles_before.volatiles);
+        assert!(stockpiles_after.rare_materials < stockpiles_before.rare_materials);
+
+        session.advance_ticks(10);
+
+        let defended_location = session
+            .state()
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("defended location should exist");
+        assert_eq!(defended_location.territory, TerritoryState::Owned);
+        assert_eq!(defended_location.controller, Some(PlayerId::new(2)));
+        assert_eq!(session.state().victory, VictoryState::Ongoing);
+
+        let attacker_events = session
+            .player_events(PlayerId::new(1), TickId::default())
+            .expect("attacker event feed should be available");
+        let defender_events = session
+            .player_events(PlayerId::new(2), TickId::default())
+            .expect("defender event feed should be available");
+        assert!(attacker_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::StrategicStrikeIntercepted {
+                location_id: 2,
+                attacker_id,
+                defender_id,
+            } if *attacker_id == PlayerId::new(1) && *defender_id == PlayerId::new(2)
+        )));
+        assert!(defender_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::StrategicStrikeIntercepted {
+                location_id: 2,
+                attacker_id,
+                defender_id,
+            } if *attacker_id == PlayerId::new(1) && *defender_id == PlayerId::new(2)
+        )));
+    }
+
+    #[test]
+    fn strategic_strike_destroys_undefended_enemy_world_and_ends_match() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            undefended_enemy_world_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("survey transit should be accepted");
+        session.advance_ticks(10);
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::DispatchStrategicStrike {
+                    origin_location_id: 1,
+                    destination_location_id: 2,
+                },
+            )
+            .expect("strategic strike should be accepted");
+        session.advance_ticks(10);
+
+        let destroyed_location = session
+            .state()
+            .locations
+            .iter()
+            .find(|location| location.location_id == 2)
+            .expect("destroyed location should exist");
+        assert_eq!(destroyed_location.territory, TerritoryState::Destroyed);
+        assert_eq!(destroyed_location.controller, None);
+        assert!(destroyed_location.infrastructure.is_empty());
+        assert_eq!(
+            session.state().victory,
+            VictoryState::Won {
+                winner: PlayerId::new(1),
+            }
+        );
+
+        let attacker_events = session
+            .player_events(PlayerId::new(1), TickId::default())
+            .expect("attacker event feed should be available");
+        let defender_events = session
+            .player_events(PlayerId::new(2), TickId::default())
+            .expect("defender event feed should be available");
+        assert!(attacker_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::LocationDestroyed {
+                location_id: 2,
+                attacker_id,
+                defender_id,
+            } if *attacker_id == PlayerId::new(1) && *defender_id == PlayerId::new(2)
+        )));
+        assert!(defender_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::LocationDestroyed {
+                location_id: 2,
+                attacker_id,
+                defender_id,
+            } if *attacker_id == PlayerId::new(1) && *defender_id == PlayerId::new(2)
+        )));
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
             EventKind::VictoryDeclared { winner, reason }

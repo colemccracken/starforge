@@ -13,6 +13,7 @@ const AFTER_HELP: &str = r#"Command Quick Reference:
   starforge-cli pacify --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli claim --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli assault --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
+  starforge-cli strike --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli build --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
   starforge-cli repair --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
   starforge-cli relay --session <PATH> --player <PLAYER> --location <LOCATION> --status <STATUS>
@@ -58,6 +59,7 @@ pub(crate) enum Command {
     Pacify(TransitArgs),
     Claim(TransitArgs),
     Assault(TransitArgs),
+    Strike(TransitArgs),
     Build(InfrastructureArgs),
     Repair(InfrastructureArgs),
     Relay(RelayArgs),
@@ -292,6 +294,36 @@ mod tests {
                         player: PlayerId::new(1),
                     },
                     origin: 4,
+                    destination: 9,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn strike_accepts_transit_arguments() {
+        assert_eq!(
+            parse_ok(&[
+                "starforge-cli",
+                "strike",
+                "-s",
+                "session.json",
+                "-p",
+                "1",
+                "--origin",
+                "3",
+                "--destination",
+                "9",
+            ]),
+            Cli {
+                command: Command::Strike(TransitArgs {
+                    common: SessionPlayerArgs {
+                        session: SessionArg {
+                            session: PathBuf::from("session.json"),
+                        },
+                        player: PlayerId::new(1),
+                    },
+                    origin: 3,
                     destination: 9,
                 }),
             }

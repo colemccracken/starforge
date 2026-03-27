@@ -172,3 +172,4 @@ entries:
       - transit_kind.pacification
       - transit_kind.claim
       - transit_kind.assault
+      - transit_kind.strategic_strike

@@ -73,6 +73,15 @@ fn run(cli: Cli) -> Result<(), DynError> {
             },
             "assault expedition queued",
         ),
+        CliCommand::Strike(args) => cmd_mutate(
+            &args.common.session.session,
+            args.common.player,
+            CommandKind::DispatchStrategicStrike {
+                origin_location_id: args.origin,
+                destination_location_id: args.destination,
+            },
+            "strategic strike queued",
+        ),
         CliCommand::Build(args) => cmd_mutate(
             &args.common.session.session,
             args.common.player,
@@ -495,6 +504,7 @@ fn render_transit_kind(kind: &TransitKind) -> &'static str {
         TransitKind::Pacification => "pacify",
         TransitKind::Claim => "claim",
         TransitKind::Assault => "assault",
+        TransitKind::StrategicStrike => "strategic-strike",
     }
 }
 
@@ -662,6 +672,22 @@ fn render_event(event: &starforge_core::EventKind) -> String {
         } => format!(
             "pacification completed at #{} for P{}",
             location_id, player_id.0
+        ),
+        starforge_core::EventKind::StrategicStrikeIntercepted {
+            location_id,
+            attacker_id,
+            defender_id,
+        } => format!(
+            "strategic strike on #{} by P{} intercepted by P{}",
+            location_id, attacker_id.0, defender_id.0
+        ),
+        starforge_core::EventKind::LocationDestroyed {
+            location_id,
+            attacker_id,
+            defender_id,
+        } => format!(
+            "location #{} destroyed by P{} against P{}",
+            location_id, attacker_id.0, defender_id.0
         ),
         starforge_core::EventKind::TrainingRunStarted {
             target_tier,

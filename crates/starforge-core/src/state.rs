@@ -461,6 +461,7 @@ pub enum TransitKind {
     Pacification,
     Claim,
     Assault,
+    StrategicStrike,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

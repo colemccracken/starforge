@@ -199,18 +199,23 @@ entries:
     title: Conquest Rules
     kind: concept
     parent_id: conflict
-    summary: Military conquest now supports assault-driven contested worlds, deterministic takeover, and pacification, while destruction outcomes remain future work.
+    summary: Military conquest now supports assault-driven contested worlds, deterministic takeover, pacification, and strategic destruction with defensive interception.
     status: draft
     reference_sections:
       - Conquest Rules
       - Takeover Outcome
       - Destruction Outcome
+      - Strategic Warhead Rules
     implementation_keys:
       - core.session.resolve_assault_arrival
+      - core.session.resolve_strategic_strike_arrival
     related_ids:
       - commands.dispatch_assault_transit
+      - commands.dispatch_strategic_strike
       - events.location_contested
       - events.location_captured
+      - events.strategic_strike_intercepted
+      - events.location_destroyed
       - events.pacification_completed
 
   - id: victory
@@ -221,8 +226,8 @@ entries:
     title: Conquest Victory
     kind: concept
     parent_id: victory
-    summary: Elimination of all opposing sovereignty is part of the reference design but is not yet implemented in engine victory logic.
-    status: planned
+    summary: Elimination of all opposing owned worlds now produces a first deterministic military conquest victory, though command-collapse variants remain future work.
+    status: draft
     reference_sections:
       - Conquest Victory
       - Defeat State

@@ -116,6 +116,16 @@ entries:
       - command_kind.dispatch_assault_transit
     related_ids:
       - conflict.conquest_rules
+  - id: commands.dispatch_strategic_strike
+    title: DispatchStrategicStrike
+    kind: command
+    parent_id: commands
+    summary: Sends a costly strategic strike to destroy or deny an enemy-controlled world.
+    status: implemented
+    implementation_keys:
+      - command_kind.dispatch_strategic_strike
+    related_ids:
+      - conflict.conquest_rules
   - id: commands.survey_location
     title: SurveyLocation
     kind: command

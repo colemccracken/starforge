@@ -180,6 +180,22 @@ entries:
     status: implemented
     implementation_keys:
       - event_kind.location_captured
+  - id: events.strategic_strike_intercepted
+    title: StrategicStrikeIntercepted
+    kind: event
+    parent_id: events
+    summary: Emits when a defended world intercepts an incoming strategic strike.
+    status: implemented
+    implementation_keys:
+      - event_kind.strategic_strike_intercepted
+  - id: events.location_destroyed
+    title: LocationDestroyed
+    kind: event
+    parent_id: events
+    summary: Emits when a strategic strike destroys an enemy-controlled world.
+    status: implemented
+    implementation_keys:
+      - event_kind.location_destroyed
   - id: events.pacification_completed
     title: PacificationCompleted
     kind: event

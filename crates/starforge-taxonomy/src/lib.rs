@@ -647,6 +647,7 @@ fn implementation_catalog() -> BTreeSet<String> {
             "core.session.resolve_pacification_arrival",
             "core.session.resolve_claim_arrival",
             "core.session.resolve_assault_arrival",
+            "core.session.resolve_strategic_strike_arrival",
         ]
         .into_iter()
         .map(str::to_owned),
