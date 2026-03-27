@@ -110,11 +110,32 @@ async fn tui_loop(
         tokio::select! {
             maybe_event = event_rx.recv() => {
                 let Some(event) = maybe_event else { break; };
-                if let Some(command) = handle_event(&event, &mut state, &frame, player_id)? {
-                    if let UiCommand::Quit = command {
-                        break;
+                match handle_event(&event, &mut state, &frame, player_id) {
+                    Ok(Some(UiCommand::Quit)) => break,
+                    Ok(Some(command)) => {
+                        if let Err(error) = apply_ui_command(
+                            client,
+                            session_id,
+                            player_id,
+                            &mut state,
+                            &mut frame,
+                            command,
+                        )
+                        .await
+                        {
+                            report_ui_error(&mut state, &*error);
+                            try_refresh_frame(
+                                client,
+                                session_id,
+                                player_id,
+                                &mut state,
+                                &mut frame,
+                            )
+                            .await;
+                        }
                     }
-                    apply_ui_command(client, session_id, player_id, &mut state, &mut frame, command).await?;
+                    Ok(None) => {}
+                    Err(error) => report_ui_error(&mut state, &*error),
                 }
             }
             _ = sleep(Duration::from_millis(100)) => {
@@ -126,6 +147,29 @@ async fn tui_loop(
     }
 
     Ok(())
+}
+
+fn report_ui_error(state: &mut TuiState, error: &dyn Error) {
+    state.push_output(format!("Error: {error}"));
+}
+
+async fn try_refresh_frame(
+    client: &ApiClient,
+    session_id: SessionId,
+    player_id: PlayerId,
+    state: &mut TuiState,
+    frame: &mut PlayerFrameResponse,
+) {
+    match client
+        .frame(session_id, player_id, frame.next_event_index)
+        .await
+    {
+        Ok(updated) => {
+            state.apply_frame(&updated);
+            *frame = updated;
+        }
+        Err(error) => report_ui_error(state, &*error),
+    }
 }
 
 fn spawn_event_thread(
@@ -1243,9 +1287,11 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use starforge_api::PlayerAlertKind;
 
-    use super::{FocusPane, ModalState, TuiState, default_research_command};
+    use super::{FocusPane, ModalState, TuiState, default_research_command, report_ui_error};
 
     #[test]
     fn reducer_sets_origin_from_selection() {
@@ -1340,6 +1386,30 @@ mod tests {
         assert_eq!(
             input,
             "budget --upkeep 0 --research 0 --training 0 --agents 0"
+        );
+    }
+
+    #[test]
+    fn ui_errors_are_written_to_output_instead_of_bubbling() {
+        let mut state = TuiState {
+            selected_location_index: 0,
+            origin_location_id: None,
+            target_location_id: None,
+            focus: FocusPane::Overview,
+            modal: None,
+            unread_alerts: Vec::new(),
+            recent_events: Vec::new(),
+            output_lines: Vec::new(),
+        };
+
+        report_ui_error(
+            &mut state,
+            &io::Error::other("api request failed: 409 Conflict"),
+        );
+
+        assert_eq!(
+            state.output_lines,
+            vec!["Error: api request failed: 409 Conflict".to_owned()]
         );
     }
 }
