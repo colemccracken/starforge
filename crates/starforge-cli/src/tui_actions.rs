@@ -1923,6 +1923,9 @@ mod tests {
         let actions = derive_actions(&frame, 1);
         let claim = action_by_id(&actions, ActionId::Claim).expect("claim");
         assert!(claim.availability.is_enabled());
+        assert!(action_by_id(&actions, ActionId::Pacify).is_some());
+        assert!(action_by_id(&actions, ActionId::Assault).is_none());
+        assert!(action_by_id(&actions, ActionId::Strike).is_none());
     }
 
     #[test]

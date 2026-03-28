@@ -2017,7 +2017,7 @@ mod tests {
             .expect("stale location should be present");
 
         assert_eq!(stale.visibility, LocationVisibility::Surveyed);
-        assert_eq!(stale.territory, TerritoryState::Obscured);
+        assert_eq!(stale.territory, TerritoryState::Neutral);
         assert!(stale.kind.is_some());
         assert!(stale.infrastructure.is_none());
         assert!(stale_view.visibility.stale_location_ids.contains(&2));

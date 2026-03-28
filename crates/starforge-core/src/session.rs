@@ -2978,7 +2978,11 @@ fn project_location_for_player(
             location_id: location.location_id,
             name: location.name.clone(),
             visibility: LocationVisibility::Surveyed,
-            territory: TerritoryState::Obscured,
+            territory: if location.territory == TerritoryState::Neutral {
+                TerritoryState::Neutral
+            } else {
+                TerritoryState::Obscured
+            },
             controller: None,
             contesting_players: None,
             pacification_ticks_remaining: None,
