@@ -156,3 +156,14 @@ impl fmt::Display for ValidationError {
 }
 
 impl std::error::Error for ValidationError {}
+
+pub fn format_reserved_throughput_shortfall(
+    activity: &str,
+    reserved: u32,
+    required: u32,
+) -> String {
+    let shortfall = required.saturating_sub(reserved);
+    format!(
+        "need {required} {activity} throughput, but only {reserved} is reserved (short {shortfall})"
+    )
+}

@@ -3042,6 +3042,41 @@ mod tests {
     }
 
     #[test]
+    fn research_project_validation_reports_reserved_throughput_shortfall() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            economy_fixture_scenario(),
+        );
+
+        session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::SetThroughputBudget {
+                    reserved_for_model_upkeep: 0,
+                    reserved_for_research: 8,
+                    reserved_for_training: 0,
+                    reserved_for_agents: 0,
+                },
+            )
+            .expect("research budget should be accepted");
+        let error = session
+            .issue_command_now(
+                PlayerId::new(1),
+                CommandKind::StartResearchProject {
+                    branch: ResearchBranch::Industry,
+                    target_level: 1,
+                },
+            )
+            .expect_err("research project should be rejected");
+
+        assert_eq!(error.code, "insufficient_research_budget");
+        assert!(error.message.contains("need 16 research throughput"));
+        assert!(error.message.contains("only 8 is reserved"));
+        assert!(error.message.contains("short 8"));
+    }
+
+    #[test]
     fn command_collapse_starts_and_defeats_after_countdown() {
         let mut session = GameSession::new(
             SessionId::new(1),

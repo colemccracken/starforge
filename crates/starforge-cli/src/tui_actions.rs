@@ -6,6 +6,7 @@ use starforge_core::{
         buildable_infrastructure_kinds, construction_preview, is_unique_infrastructure,
         repair_preview, research_preview, strategic_strike_cost, training_preview,
     },
+    command::format_reserved_throughput_shortfall,
 };
 
 use crate::{
@@ -1451,9 +1452,11 @@ fn research_choices(frame: &PlayerFrameResponse) -> Vec<ActionChoice<ResearchBra
         } else if availability.is_enabled()
             && frame.view.throughput.reserved_for_research < preview.required_throughput
         {
-            availability = disabled(
-                "reserved research throughput is below the requirement for the requested level",
-            );
+            availability = disabled(format_reserved_throughput_shortfall(
+                "research",
+                frame.view.throughput.reserved_for_research,
+                preview.required_throughput,
+            ));
         } else if availability.is_enabled() && !player_has_research_site(frame) {
             availability = disabled(
                 "research requires at least one owned world with an operational command nexus and datacenter",
@@ -1496,9 +1499,11 @@ fn training_choices(frame: &PlayerFrameResponse) -> Vec<ActionChoice<u8>> {
             } else if availability.is_enabled()
                 && frame.view.throughput.reserved_for_training < preview.required_throughput
             {
-                availability = disabled(
-                    "reserved training throughput is below the requirement for the requested tier",
-                );
+                availability = disabled(format_reserved_throughput_shortfall(
+                    "training",
+                    frame.view.throughput.reserved_for_training,
+                    preview.required_throughput,
+                ));
             } else if availability.is_enabled()
                 && owned_locations(frame).len() < preview.minimum_worlds
             {
@@ -1996,6 +2001,26 @@ mod tests {
                 .iter()
                 .all(|choice| !choice.availability.is_enabled())
         );
+    }
+
+    #[test]
+    fn research_form_shows_reserved_throughput_shortfall() {
+        let mut frame = running_frame();
+        frame.view.throughput.reserved_for_research = 8;
+
+        let form =
+            super::action_form_for_selected(ActionId::Research, &frame, 0).expect("research form");
+        let ActionFormState::Research { choices, .. } = form else {
+            panic!("expected research form");
+        };
+        let industry = choices
+            .iter()
+            .find(|choice| choice.value == ResearchBranch::Industry)
+            .expect("industry choice");
+        assert!(!industry.availability.is_enabled());
+        assert!(industry.summary().contains("need 16 research throughput"));
+        assert!(industry.summary().contains("only 8 is reserved"));
+        assert!(industry.summary().contains("short 8"));
     }
 
     #[test]

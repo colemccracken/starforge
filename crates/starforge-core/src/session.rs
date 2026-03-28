@@ -10,9 +10,9 @@ use crate::{
     LocationState, LocationView, LocationVisibility, PlayerId, PlayerStateView, RelayStatus,
     ReplayLog, ResearchBranch, ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId,
     Snapshot, StrategicPosition, TerritoryState, TickId, TransitKind, TransitState, TransitView,
-    ValidationError, buildable_infrastructure_kinds, construction_preview,
-    is_unique_infrastructure, repair_preview, research_preview, strategic_strike_cost,
-    training_preview,
+    ValidationError, buildable_infrastructure_kinds, command::format_reserved_throughput_shortfall,
+    construction_preview, is_unique_infrastructure, repair_preview, research_preview,
+    strategic_strike_cost, training_preview,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1132,9 +1132,11 @@ impl GameSession {
         if player.throughput.reserved_for_training < required_training_throughput {
             return Err(ValidationError {
                 code: "insufficient_training_budget".to_owned(),
-                message:
-                    "reserved training throughput is below the requirement for the requested tier"
-                        .to_owned(),
+                message: format_reserved_throughput_shortfall(
+                    "training",
+                    player.throughput.reserved_for_training,
+                    required_training_throughput,
+                ),
             });
         }
 
@@ -1235,9 +1237,11 @@ impl GameSession {
         if player.throughput.reserved_for_research < required_research_throughput {
             return Err(ValidationError {
                 code: "insufficient_research_budget".to_owned(),
-                message:
-                    "reserved research throughput is below the requirement for the requested level"
-                        .to_owned(),
+                message: format_reserved_throughput_shortfall(
+                    "research",
+                    player.throughput.reserved_for_research,
+                    required_research_throughput,
+                ),
             });
         }
 
