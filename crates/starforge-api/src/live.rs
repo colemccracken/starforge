@@ -23,6 +23,7 @@ use tokio::{
 use crate::{ApiBootstrapError, ApiServerConfig, load_session_summary};
 
 const DEFAULT_TICK_INTERVAL_MS: u64 = 250;
+const ALLOWED_TICK_INTERVAL_MS: [u64; 6] = [125, 250, 500, 1_000, 2_500, 5_000];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -669,9 +670,10 @@ impl LiveSessionHandle {
                 "cannot change speed for a finished session".to_owned(),
             ));
         }
-        if !matches!(tick_interval_ms, 125 | 250 | 500) {
+        if !ALLOWED_TICK_INTERVAL_MS.contains(&tick_interval_ms) {
             return Err(LiveSessionError::Invalid(
-                "tick interval must be one of 125, 250, or 500 milliseconds".to_owned(),
+                "tick interval must be one of 125, 250, 500, 1000, 2500, or 5000 milliseconds"
+                    .to_owned(),
             ));
         }
 

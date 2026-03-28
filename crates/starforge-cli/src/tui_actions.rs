@@ -18,6 +18,7 @@ use crate::{
 
 const COMMANDS_LOCKED_REASON: &str = "commands are disabled until the competitive match starts";
 const SURVEY_REQUIRED_REASON: &str = "survey the destination before issuing this action";
+const SANDBOX_SPEED_CHOICES_MS: [u64; 3] = [5_000, 2_500, 1_000];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneFocus {
@@ -1195,11 +1196,10 @@ fn training_form(frame: &PlayerFrameResponse) -> ActionFormState {
 fn speed_form(frame: &PlayerFrameResponse) -> ActionFormState {
     ActionFormState::Speed {
         selected_choice: 0,
-        choices: vec![
-            speed_choice(500, frame),
-            speed_choice(250, frame),
-            speed_choice(125, frame),
-        ],
+        choices: SANDBOX_SPEED_CHOICES_MS
+            .into_iter()
+            .map(|value| speed_choice(value, frame))
+            .collect(),
     }
 }
 
@@ -2026,6 +2026,24 @@ mod tests {
                 .summary()
                 .contains("requires control of at least 2 worlds")
         );
+    }
+
+    #[test]
+    fn speed_form_uses_slower_presets() {
+        let mut frame = running_frame();
+        frame.runner.tick_interval_ms = super::SANDBOX_SPEED_CHOICES_MS[0];
+
+        let form = super::action_form_for_selected(ActionId::Speed, &frame, 0).expect("speed form");
+        let ActionFormState::Speed { choices, .. } = form else {
+            panic!("expected speed form");
+        };
+
+        let values = choices
+            .iter()
+            .map(|choice| choice.value)
+            .collect::<Vec<_>>();
+        assert_eq!(values, super::SANDBOX_SPEED_CHOICES_MS);
+        assert_eq!(choices[0].details, "Current speed.");
     }
 
     fn running_frame() -> starforge_api::PlayerFrameResponse {

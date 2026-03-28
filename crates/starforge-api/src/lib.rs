@@ -1449,13 +1449,13 @@ mod tests {
                 Method::POST,
                 &format!("/live/sessions/{}/speed", created.session_id.0),
                 json_body(&RunnerSpeedRequest {
-                    tick_interval_ms: 125,
+                    tick_interval_ms: 5_000,
                 }),
             ),
             StatusCode::OK,
         )
         .await;
-        assert_eq!(speed_response.runner.tick_interval_ms, 125);
+        assert_eq!(speed_response.runner.tick_interval_ms, 5_000);
 
         let run_response: SessionInfoResponse = response_json(
             router.clone(),

@@ -45,6 +45,8 @@ use crate::{
 };
 
 type DynError = Box<dyn Error>;
+pub(crate) const TUI_SANDBOX_DEFAULT_TICK_INTERVAL_MS: u64 = 5_000;
+const TUI_SPEED_SHORTCUTS_MS: [u64; 3] = [TUI_SANDBOX_DEFAULT_TICK_INTERVAL_MS, 2_500, 1_000];
 
 pub(crate) async fn create_and_play(
     api_url: String,
@@ -52,12 +54,18 @@ pub(crate) async fn create_and_play(
     mode: SessionMode,
 ) -> Result<(), DynError> {
     let client = ApiClient::new(api_url);
+    let tick_interval_override = default_tick_interval_override(mode.clone());
     let response = client
         .create_session(CreateSessionRequest {
             mode,
             claimed_player_id: Some(player_id),
         })
         .await?;
+    if let Some(tick_interval_ms) = tick_interval_override {
+        client
+            .set_speed(response.session_id, tick_interval_ms)
+            .await?;
+    }
     run_tui(client, response.session_id, player_id).await
 }
 
@@ -302,6 +310,7 @@ impl TuiState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum UiCommand {
     Quit,
     ExecuteParsed(PlayerScopedCommand),
@@ -394,11 +403,15 @@ fn handle_event(
         }
         KeyCode::Char('R') => Ok(Some(UiCommand::ToggleReady)),
         KeyCode::Char(' ') => Ok(Some(UiCommand::TogglePause)),
-        KeyCode::Char('1') => Ok(Some(UiCommand::SetSpeed(500))),
-        KeyCode::Char('2') => Ok(Some(UiCommand::SetSpeed(250))),
-        KeyCode::Char('3') => Ok(Some(UiCommand::SetSpeed(125))),
+        KeyCode::Char('1') => Ok(Some(UiCommand::SetSpeed(TUI_SPEED_SHORTCUTS_MS[0]))),
+        KeyCode::Char('2') => Ok(Some(UiCommand::SetSpeed(TUI_SPEED_SHORTCUTS_MS[1]))),
+        KeyCode::Char('3') => Ok(Some(UiCommand::SetSpeed(TUI_SPEED_SHORTCUTS_MS[2]))),
         _ => Ok(None),
     }
+}
+
+fn default_tick_interval_override(mode: SessionMode) -> Option<u64> {
+    (mode == SessionMode::Sandbox).then_some(TUI_SANDBOX_DEFAULT_TICK_INTERVAL_MS)
 }
 
 fn handle_modal_key(
@@ -1407,12 +1420,15 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use starforge_api::PlayerAlertKind;
 
     use crate::tui_actions::{ActionFormState, ActionId, PaneFocus, action_form_for_selected};
 
-    use super::{ModalState, TuiState, handle_modal_key};
+    use super::{
+        ModalState, TUI_SANDBOX_DEFAULT_TICK_INTERVAL_MS, TuiState, UiCommand,
+        default_tick_interval_override, handle_event, handle_modal_key,
+    };
 
     #[test]
     fn from_frame_selects_first_visible_action() {
@@ -1484,5 +1500,50 @@ mod tests {
                 .expect("error output")
                 .contains("Action failed")
         );
+    }
+
+    #[test]
+    fn sandbox_create_defaults_to_five_second_ticks() {
+        assert_eq!(
+            default_tick_interval_override(starforge_api::SessionMode::Sandbox),
+            Some(TUI_SANDBOX_DEFAULT_TICK_INTERVAL_MS)
+        );
+        assert_eq!(
+            default_tick_interval_override(starforge_api::SessionMode::Competitive),
+            None
+        );
+    }
+
+    #[test]
+    fn speed_shortcuts_use_slower_presets() {
+        let frame = crate::live_test_frame();
+        let mut state = TuiState::from_frame(&frame);
+
+        let shortcut_one = handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)),
+            &mut state,
+            &frame,
+        )
+        .expect("shortcut should parse");
+        assert_eq!(
+            shortcut_one,
+            Some(UiCommand::SetSpeed(TUI_SANDBOX_DEFAULT_TICK_INTERVAL_MS))
+        );
+
+        let shortcut_two = handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)),
+            &mut state,
+            &frame,
+        )
+        .expect("shortcut should parse");
+        assert_eq!(shortcut_two, Some(UiCommand::SetSpeed(2_500)));
+
+        let shortcut_three = handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE)),
+            &mut state,
+            &frame,
+        )
+        .expect("shortcut should parse");
+        assert_eq!(shortcut_three, Some(UiCommand::SetSpeed(1_000)));
     }
 }
