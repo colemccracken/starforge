@@ -39,7 +39,7 @@ mod tests {
         InfrastructureCondition, InfrastructureKind, InfrastructureSeed, LocationConnection,
         LocationKind, LocationVisibility, MatchSeed, PlayerId, RelayStatus, ResearchBranch,
         ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, StartingLocation,
-        StrategicPosition, TerritoryState, ThreatLevel, TickId, VictoryState,
+        StrategicPosition, TerritoryState, ThreatLevel, TickId, TransitKind, VictoryState,
     };
 
     fn infrastructure_seed(kind: InfrastructureKind) -> InfrastructureSeed {
@@ -311,6 +311,67 @@ mod tests {
                 to_location_id: 2,
                 travel_time_ticks: 12,
             }],
+            ..ScenarioConfig::test_fixture()
+        }
+    }
+
+    fn long_range_survey_fixture_scenario() -> ScenarioConfig {
+        let homeworld = compute_homeworld(
+            PlayerId::new(1),
+            1,
+            "Helios",
+            EnergyPotential::High,
+            BuildCapacity::Expansive,
+        );
+        let midpoint = StartingLocation {
+            location_id: 2,
+            name: "Waypoint".to_owned(),
+            kind: LocationKind::Moon,
+            resource_richness: ResourceRichness::Sparse,
+            energy_potential: EnergyPotential::Moderate,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Peripheral,
+            territory: TerritoryState::Neutral,
+            controller: None,
+            homeworld_of: None,
+            relay_status: RelayStatus::Disconnected,
+            orbital_slots: 1,
+            has_environmental_hazard: false,
+            starting_infrastructure: Vec::new(),
+            hostile_remnant: None,
+        };
+        let remote = StartingLocation {
+            location_id: 3,
+            name: "Far Horizon".to_owned(),
+            kind: LocationKind::BarrenWorld,
+            resource_richness: ResourceRichness::Moderate,
+            energy_potential: EnergyPotential::Low,
+            build_capacity: BuildCapacity::Standard,
+            strategic_position: StrategicPosition::Peripheral,
+            territory: TerritoryState::Neutral,
+            controller: None,
+            homeworld_of: None,
+            relay_status: RelayStatus::Disconnected,
+            orbital_slots: 2,
+            has_environmental_hazard: true,
+            starting_infrastructure: Vec::new(),
+            hostile_remnant: None,
+        };
+
+        ScenarioConfig {
+            starting_locations: vec![homeworld, midpoint, remote],
+            connections: vec![
+                LocationConnection {
+                    from_location_id: 1,
+                    to_location_id: 2,
+                    travel_time_ticks: 7,
+                },
+                LocationConnection {
+                    from_location_id: 2,
+                    to_location_id: 3,
+                    travel_time_ticks: 11,
+                },
+            ],
             ..ScenarioConfig::test_fixture()
         }
     }
@@ -1960,6 +2021,46 @@ mod tests {
         assert!(stale.kind.is_some());
         assert!(stale.infrastructure.is_none());
         assert!(stale_view.visibility.stale_location_ids.contains(&2));
+    }
+
+    #[test]
+    fn survey_transit_can_target_distant_world_without_intermediate_surveys() {
+        let mut session = GameSession::new(
+            SessionId::new(1),
+            GameConfig::default(),
+            long_range_survey_fixture_scenario(),
+        );
+
+        session
+            .accept_command(CommandEnvelope {
+                session_id: SessionId::new(1),
+                player_id: PlayerId::new(1),
+                issued_at_tick: TickId::default(),
+                apply_at_tick: TickId::default(),
+                command: CommandKind::DispatchSurveyTransit {
+                    origin_location_id: 1,
+                    destination_location_id: 3,
+                },
+            })
+            .expect("long-range survey transit should be accepted");
+
+        let initial_view = session
+            .player_view(PlayerId::new(1))
+            .expect("player view should be available");
+        assert_eq!(initial_view.transits.len(), 1);
+        assert_eq!(initial_view.transits[0].origin_id, 1);
+        assert_eq!(initial_view.transits[0].destination_id, 3);
+        assert_eq!(initial_view.transits[0].eta_tick, TickId::new(18));
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TransitDispatched {
+                origin_id: 1,
+                destination_id: 3,
+                eta_tick,
+                kind: TransitKind::Survey,
+                ..
+            } if *eta_tick == TickId::new(18)
+        )));
     }
 
     #[test]

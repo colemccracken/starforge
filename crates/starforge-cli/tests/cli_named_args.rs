@@ -2,6 +2,7 @@ use std::{
     fs,
     net::TcpListener,
     path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard},
     thread,
     time::Duration,
 };
@@ -15,6 +16,13 @@ use tempfile::tempdir;
 
 fn cli_command() -> Command {
     Command::cargo_bin("starforge-cli").expect("starforge-cli binary should build")
+}
+
+static API_SERVER_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+struct SpawnedApiServer {
+    base_url: String,
+    _guard: MutexGuard<'static, ()>,
 }
 
 fn seed_session(path: &Path) {
@@ -38,7 +46,10 @@ fn temp_session_path() -> (tempfile::TempDir, PathBuf) {
     (temp, session_path)
 }
 
-fn spawn_api_server() -> String {
+fn spawn_api_server() -> SpawnedApiServer {
+    let guard = API_SERVER_TEST_MUTEX
+        .lock()
+        .expect("api server test mutex should not be poisoned");
     let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
     let address = listener.local_addr().expect("local address should resolve");
     drop(listener);
@@ -55,7 +66,10 @@ fn spawn_api_server() -> String {
             .expect("api server should run");
     });
     thread::sleep(Duration::from_millis(200));
-    base_url
+    SpawnedApiServer {
+        base_url,
+        _guard: guard,
+    }
 }
 
 #[test]
@@ -172,10 +186,10 @@ fn unsupported_short_alias_invocation_fails() {
 
 #[test]
 fn api_mode_can_create_and_query_a_remote_session() {
-    let api_base = spawn_api_server();
+    let api = spawn_api_server();
 
     cli_command()
-        .args(["--api-base", &api_base, "new"])
+        .args(["--api-base", &api.base_url, "new"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Created remote session #1"));
@@ -183,7 +197,7 @@ fn api_mode_can_create_and_query_a_remote_session() {
     cli_command()
         .args([
             "--api-base",
-            &api_base,
+            &api.base_url,
             "status",
             "--session",
             "1",
@@ -198,10 +212,10 @@ fn api_mode_can_create_and_query_a_remote_session() {
 
 #[test]
 fn api_mode_map_shows_known_routes() {
-    let api_base = spawn_api_server();
+    let api = spawn_api_server();
 
     cli_command()
-        .args(["--api-base", &api_base, "new"])
+        .args(["--api-base", &api.base_url, "new"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Created remote session #1"));
@@ -209,7 +223,7 @@ fn api_mode_map_shows_known_routes() {
     cli_command()
         .args([
             "--api-base",
-            &api_base,
+            &api.base_url,
             "map",
             "--session",
             "1",
@@ -227,16 +241,16 @@ fn api_mode_map_shows_known_routes() {
 
 #[test]
 fn api_mode_run_and_pause_commands_work() {
-    let api_base = spawn_api_server();
+    let api = spawn_api_server();
 
     cli_command()
-        .args(["--api-base", &api_base, "new"])
+        .args(["--api-base", &api.base_url, "new"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Created remote session #1"));
 
     cli_command()
-        .args(["--api-base", &api_base, "run", "--session", "1"])
+        .args(["--api-base", &api.base_url, "run", "--session", "1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Session #1 is running"));
@@ -244,7 +258,7 @@ fn api_mode_run_and_pause_commands_work() {
     thread::sleep(Duration::from_millis(150));
 
     cli_command()
-        .args(["--api-base", &api_base, "pause", "--session", "1"])
+        .args(["--api-base", &api.base_url, "pause", "--session", "1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Session #1 is paused"));
@@ -252,7 +266,7 @@ fn api_mode_run_and_pause_commands_work() {
     cli_command()
         .args([
             "--api-base",
-            &api_base,
+            &api.base_url,
             "status",
             "--session",
             "1",
@@ -318,12 +332,12 @@ fn file_mode_metrics_save_load_and_scenario_run_work() {
 
 #[test]
 fn api_mode_metrics_save_and_load_work() {
-    let api_base = spawn_api_server();
+    let api = spawn_api_server();
     let temp = tempdir().expect("tempdir should be created");
     let snapshot_path = temp.path().join("remote-snapshot.json");
 
     cli_command()
-        .args(["--api-base", &api_base, "new"])
+        .args(["--api-base", &api.base_url, "new"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Created remote session #1"));
@@ -331,7 +345,7 @@ fn api_mode_metrics_save_and_load_work() {
     cli_command()
         .args([
             "--api-base",
-            &api_base,
+            &api.base_url,
             "step",
             "--session",
             "1",
@@ -343,7 +357,7 @@ fn api_mode_metrics_save_and_load_work() {
         .stdout(predicate::str::contains("Advanced to tick 3"));
 
     cli_command()
-        .args(["--api-base", &api_base, "metrics", "--session", "1"])
+        .args(["--api-base", &api.base_url, "metrics", "--session", "1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Tick: 3"))
@@ -352,7 +366,7 @@ fn api_mode_metrics_save_and_load_work() {
     cli_command()
         .args([
             "--api-base",
-            &api_base,
+            &api.base_url,
             "save",
             "--session",
             "1",
@@ -368,7 +382,7 @@ fn api_mode_metrics_save_and_load_work() {
     cli_command()
         .args([
             "--api-base",
-            &api_base,
+            &api.base_url,
             "step",
             "--session",
             "1",
@@ -380,7 +394,7 @@ fn api_mode_metrics_save_and_load_work() {
         .stdout(predicate::str::contains("Advanced to tick 5"));
 
     cli_command()
-        .args(["--api-base", &api_base, "load", "--input"])
+        .args(["--api-base", &api.base_url, "load", "--input"])
         .arg(&snapshot_path)
         .assert()
         .success()
@@ -390,7 +404,7 @@ fn api_mode_metrics_save_and_load_work() {
     cli_command()
         .args([
             "--api-base",
-            &api_base,
+            &api.base_url,
             "status",
             "--session",
             "1",

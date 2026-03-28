@@ -1,4 +1,7 @@
-use std::collections::BTreeSet;
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, BinaryHeap},
+};
 
 use crate::{
     BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, EventRecord,
@@ -1005,7 +1008,7 @@ impl GameSession {
             self.state.recompute_economy();
         }
         let travel_time_ticks =
-            self.travel_time_between(origin_location_id, destination_location_id)?;
+            self.travel_time_for_transit(origin_location_id, destination_location_id, &kind)?;
         let transit_id = self.state.next_transit_id();
         let eta_tick = TickId::new(
             self.state
@@ -2712,6 +2715,72 @@ impl GameSession {
                 message: "no direct route exists between the requested origin and destination"
                     .to_owned(),
             })
+    }
+
+    fn network_travel_time_between(
+        &self,
+        origin_location_id: u32,
+        destination_location_id: u32,
+    ) -> Result<u32, ValidationError> {
+        let mut best_times = BTreeMap::from([(origin_location_id, 0_u32)]);
+        let mut frontier = BinaryHeap::from([(Reverse(0_u32), origin_location_id)]);
+
+        while let Some((Reverse(travel_time), location_id)) = frontier.pop() {
+            if location_id == destination_location_id {
+                return Ok(travel_time);
+            }
+
+            let Some(best_known) = best_times.get(&location_id) else {
+                continue;
+            };
+            if travel_time > *best_known {
+                continue;
+            }
+
+            for connection in &self.state.connections {
+                let next_location_id = if connection.from_location_id == location_id {
+                    connection.to_location_id
+                } else if connection.to_location_id == location_id {
+                    connection.from_location_id
+                } else {
+                    continue;
+                };
+
+                let next_travel_time = travel_time.saturating_add(connection.travel_time_ticks);
+                let is_improved = match best_times.get(&next_location_id) {
+                    Some(best) => next_travel_time < *best,
+                    None => true,
+                };
+                if is_improved {
+                    best_times.insert(next_location_id, next_travel_time);
+                    frontier.push((Reverse(next_travel_time), next_location_id));
+                }
+            }
+        }
+
+        Err(ValidationError {
+            code: "no_route".to_owned(),
+            message: "no route exists between the requested origin and destination".to_owned(),
+        })
+    }
+
+    fn travel_time_for_transit(
+        &self,
+        origin_location_id: u32,
+        destination_location_id: u32,
+        kind: &TransitKind,
+    ) -> Result<u32, ValidationError> {
+        match kind {
+            TransitKind::Survey => {
+                self.network_travel_time_between(origin_location_id, destination_location_id)
+            }
+            TransitKind::Pacification
+            | TransitKind::Claim
+            | TransitKind::Assault
+            | TransitKind::StrategicStrike => {
+                self.travel_time_between(origin_location_id, destination_location_id)
+            }
+        }
     }
 
     fn controlled_location_state_mut(

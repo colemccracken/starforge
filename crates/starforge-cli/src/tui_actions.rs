@@ -1219,7 +1219,7 @@ fn transit_origin_choices(
                 ActionAvailability::Enabled
             };
 
-            if availability.is_enabled() && route_eta.is_none() {
+            if availability.is_enabled() && route_eta.is_none() && action_id != ActionId::Survey {
                 availability = disabled("no direct route exists between the requested origin and destination");
             }
 
@@ -1254,6 +1254,9 @@ fn transit_origin_choices(
 
             let mut details = match route_eta {
                 Some(eta) => format!("eta {eta}"),
+                None if action_id == ActionId::Survey => {
+                    "long-range survey; eta determined on dispatch".to_owned()
+                }
                 None => "no direct route".to_owned(),
             };
             if action_id == ActionId::Strike {
@@ -1933,7 +1936,7 @@ mod tests {
     }
 
     #[test]
-    fn origin_picker_marks_missing_routes_disabled() {
+    fn survey_origin_picker_allows_long_range_dispatch_without_known_route() {
         let mut frame = running_frame();
         frame.known_routes.clear();
         let form =
@@ -1944,12 +1947,12 @@ mod tests {
         assert!(
             choices
                 .iter()
-                .all(|choice| !choice.availability.is_enabled())
+                .all(|choice| choice.availability.is_enabled())
         );
         assert!(
             choices
                 .iter()
-                .all(|choice| choice.summary().contains("no direct route exists"))
+                .all(|choice| choice.summary().contains("long-range survey"))
         );
     }
 
