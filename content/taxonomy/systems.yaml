@@ -61,18 +61,18 @@ entries:
       - core.session.apply_queue_infrastructure_repair
     behavior_ids:
       - behavior.infrastructure.repair_project_completion
-  - id: economy.infrastructure_construction
-    title: Infrastructure Construction
+  - id: economy.infrastructure_development
+    title: Infrastructure Development
     kind: concept
     parent_id: economy
-    summary: Core economic infrastructure is built through queued projects that consume connected or local stockpiles.
+    summary: Infrastructure families advance one level at a time through queued development projects that consume connected or local stockpiles.
     status: implemented
     reference_sections:
-      - Construction Rule
+      - Development Rule
     implementation_keys:
-      - core.session.apply_queue_infrastructure_construction
+      - core.session.apply_queue_infrastructure_development
     behavior_ids:
-      - behavior.infrastructure.construction_project_completion
+      - behavior.infrastructure.development_project_completion
   - id: economy.economic_failure_states
     title: Economic Failure States
     kind: concept

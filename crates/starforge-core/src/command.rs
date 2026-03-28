@@ -41,7 +41,7 @@ pub enum CommandKind {
         location_id: u32,
         infrastructure_kind: InfrastructureKind,
     },
-    QueueInfrastructureConstruction {
+    QueueInfrastructureDevelopment {
         location_id: u32,
         infrastructure_kind: InfrastructureKind,
     },
@@ -100,7 +100,7 @@ pub enum CommandDiscriminant {
     RegisterLocation,
     SetRelayStatus,
     QueueInfrastructureRepair,
-    QueueInfrastructureConstruction,
+    QueueInfrastructureDevelopment,
     DispatchSurveyTransit,
     DispatchPacificationTransit,
     DispatchClaimTransit,
@@ -128,8 +128,8 @@ impl From<&CommandKind> for CommandDiscriminant {
             CommandKind::RegisterLocation { .. } => Self::RegisterLocation,
             CommandKind::SetRelayStatus { .. } => Self::SetRelayStatus,
             CommandKind::QueueInfrastructureRepair { .. } => Self::QueueInfrastructureRepair,
-            CommandKind::QueueInfrastructureConstruction { .. } => {
-                Self::QueueInfrastructureConstruction
+            CommandKind::QueueInfrastructureDevelopment { .. } => {
+                Self::QueueInfrastructureDevelopment
             }
             CommandKind::DispatchSurveyTransit { .. } => Self::DispatchSurveyTransit,
             CommandKind::DispatchPacificationTransit { .. } => Self::DispatchPacificationTransit,

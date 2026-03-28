@@ -286,7 +286,7 @@ pub fn behavior_coverage_ids() -> &'static [&'static str] {
         "behavior.economy.throughput_computation",
         "behavior.economy.relay_disconnect_zeroes_empire_throughput",
         "behavior.infrastructure.repair_project_completion",
-        "behavior.infrastructure.construction_project_completion",
+        "behavior.infrastructure.development_project_completion",
         "behavior.intel.survey_transit_marks_location_surveyed",
         "behavior.training.tier_two_progression",
         "behavior.expansion.pacification_then_claim",
@@ -641,7 +641,7 @@ fn implementation_catalog() -> BTreeSet<String> {
             "core.session.apply_set_throughput_budget",
             "core.session.apply_set_relay_status",
             "core.session.apply_queue_infrastructure_repair",
-            "core.session.apply_queue_infrastructure_construction",
+            "core.session.apply_queue_infrastructure_development",
             "core.session.apply_dispatch_transit",
             "core.session.apply_survey_location",
             "core.session.apply_start_training_run",
@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn construction_behavior_is_covered_and_adds_new_infrastructure() {
-        assert_behavior_id("behavior.infrastructure.construction_project_completion");
+        assert_behavior_id("behavior.infrastructure.development_project_completion");
 
         let mut session = GameSession::new(
             SessionId::new(8),
@@ -958,7 +958,7 @@ mod tests {
         session
             .issue_command_now(
                 PlayerId::new(1),
-                CommandKind::QueueInfrastructureConstruction {
+                CommandKind::QueueInfrastructureDevelopment {
                     location_id: 1,
                     infrastructure_kind: InfrastructureKind::Datacenter,
                 },

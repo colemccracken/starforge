@@ -179,7 +179,7 @@ impl GameState {
                                 });
                             }
                         }
-                        InfrastructureProjectKind::Construction {
+                        InfrastructureProjectKind::Development {
                             infrastructure_kind,
                         } => {
                             location.infrastructure.push(InfrastructureState {
@@ -191,7 +191,7 @@ impl GameState {
                             completions.push(InfrastructureProjectCompletion {
                                 location_id: location.location_id,
                                 kind: infrastructure_kind.clone(),
-                                project_kind: InfrastructureProjectKind::Construction {
+                                project_kind: InfrastructureProjectKind::Development {
                                     infrastructure_kind,
                                 },
                             });
@@ -432,8 +432,8 @@ pub struct LocationView {
     pub relay_status: Option<RelayStatus>,
     pub orbital_slots: Option<u8>,
     pub has_environmental_hazard: Option<bool>,
-    pub infrastructure: Option<Vec<InfrastructureState>>,
-    pub infrastructure_projects: Option<Vec<InfrastructureProjectState>>,
+    pub infrastructure: Option<Vec<InfrastructureFamilyView>>,
+    pub infrastructure_projects: Option<Vec<InfrastructureProjectView>>,
     pub economy: Option<LocationEconomyState>,
     pub stockpiles: Option<ResourceStockpiles>,
     pub hostile_remnant_present: Option<bool>,
@@ -584,9 +584,69 @@ pub enum InfrastructureProjectKind {
         #[serde(default)]
         target_index: usize,
     },
-    Construction {
+    Development {
         infrastructure_kind: InfrastructureKind,
     },
+}
+
+impl InfrastructureProjectKind {
+    pub fn infrastructure_kind(&self) -> &InfrastructureKind {
+        match self {
+            Self::Repair {
+                infrastructure_kind,
+                ..
+            }
+            | Self::Development {
+                infrastructure_kind,
+                ..
+            } => infrastructure_kind,
+        }
+    }
+
+    pub const fn view_kind(&self) -> InfrastructureProjectViewKind {
+        match self {
+            Self::Repair { .. } => InfrastructureProjectViewKind::Repair,
+            Self::Development { .. } => InfrastructureProjectViewKind::Development,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InfrastructureFamilyView {
+    pub kind: InfrastructureKind,
+    pub level: u8,
+    pub max_level: u8,
+    pub operational_levels: u8,
+    pub degraded_levels: u8,
+    pub offline_levels: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InfrastructureProjectView {
+    pub kind: InfrastructureKind,
+    pub project_kind: InfrastructureProjectViewKind,
+    pub remaining_ticks: u32,
+    pub total_ticks: u32,
+    pub target_level: u8,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    EnumIter,
+    IntoStaticStr,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum InfrastructureProjectViewKind {
+    Repair,
+    Development,
 }
 
 impl From<InfrastructureSeed> for InfrastructureState {
@@ -620,6 +680,122 @@ pub(crate) struct InfrastructureProjectCompletion {
     pub location_id: u32,
     pub kind: InfrastructureKind,
     pub project_kind: InfrastructureProjectKind,
+}
+
+pub const MAX_INFRASTRUCTURE_LEVEL: u8 = 5;
+
+const INFRASTRUCTURE_FAMILY_KINDS: [InfrastructureKind; 8] = [
+    InfrastructureKind::CommandNexus,
+    InfrastructureKind::MiningSite,
+    InfrastructureKind::EnergyProducer,
+    InfrastructureKind::Datacenter,
+    InfrastructureKind::RelayUplink,
+    InfrastructureKind::ShipyardRing,
+    InfrastructureKind::MilitaryWorks,
+    InfrastructureKind::GroundDefenseSite,
+];
+
+pub fn infrastructure_family_kinds() -> &'static [InfrastructureKind] {
+    &INFRASTRUCTURE_FAMILY_KINDS
+}
+
+pub fn infrastructure_family_level(
+    infrastructure: &[InfrastructureState],
+    kind: InfrastructureKind,
+) -> u8 {
+    infrastructure
+        .iter()
+        .filter(|infrastructure| infrastructure.kind == kind)
+        .count()
+        .min(usize::from(MAX_INFRASTRUCTURE_LEVEL)) as u8
+}
+
+pub fn infrastructure_family_view(
+    infrastructure: &[InfrastructureState],
+    kind: InfrastructureKind,
+) -> Option<InfrastructureFamilyView> {
+    let mut operational_levels = 0_u8;
+    let mut degraded_levels = 0_u8;
+    let mut offline_levels = 0_u8;
+
+    for segment in infrastructure.iter().filter(|segment| segment.kind == kind) {
+        match segment.condition {
+            InfrastructureCondition::Operational => {
+                operational_levels = operational_levels.saturating_add(1);
+            }
+            InfrastructureCondition::Degraded => {
+                degraded_levels = degraded_levels.saturating_add(1);
+            }
+            InfrastructureCondition::Offline => {
+                offline_levels = offline_levels.saturating_add(1);
+            }
+        }
+    }
+
+    let level = operational_levels
+        .saturating_add(degraded_levels)
+        .saturating_add(offline_levels);
+    if level == 0 {
+        return None;
+    }
+
+    Some(InfrastructureFamilyView {
+        kind,
+        level,
+        max_level: MAX_INFRASTRUCTURE_LEVEL,
+        operational_levels,
+        degraded_levels,
+        offline_levels,
+    })
+}
+
+pub fn grouped_infrastructure_families(
+    infrastructure: &[InfrastructureState],
+) -> Vec<InfrastructureFamilyView> {
+    infrastructure_family_kinds()
+        .iter()
+        .filter_map(|kind| infrastructure_family_view(infrastructure, kind.clone()))
+        .collect()
+}
+
+pub fn has_max_infrastructure_level(
+    infrastructure: &[InfrastructureState],
+    kind: InfrastructureKind,
+) -> bool {
+    infrastructure_family_level(infrastructure, kind) >= MAX_INFRASTRUCTURE_LEVEL
+}
+
+pub fn has_queued_infrastructure_family_project(
+    projects: &[InfrastructureProjectState],
+    kind: InfrastructureKind,
+) -> bool {
+    projects
+        .iter()
+        .any(|project| project.kind.infrastructure_kind() == &kind)
+}
+
+pub fn select_infrastructure_repair_target(
+    infrastructure: &[InfrastructureState],
+    kind: InfrastructureKind,
+    blocked_target_indices: &[usize],
+) -> Option<(usize, InfrastructureCondition)> {
+    infrastructure
+        .iter()
+        .enumerate()
+        .filter(|(index, infrastructure)| {
+            infrastructure.kind == kind
+                && infrastructure.condition != InfrastructureCondition::Operational
+                && !blocked_target_indices.contains(index)
+        })
+        .min_by_key(|(index, infrastructure)| {
+            let severity = match infrastructure.condition {
+                InfrastructureCondition::Offline => 0_u8,
+                InfrastructureCondition::Degraded => 1_u8,
+                InfrastructureCondition::Operational => 2_u8,
+            };
+            (severity, *index)
+        })
+        .map(|(index, infrastructure)| (index, infrastructure.condition.clone()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

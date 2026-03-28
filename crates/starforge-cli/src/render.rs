@@ -1,8 +1,8 @@
 use starforge_api::KnownRouteView;
 use starforge_core::{
-    CommandCollapseState, EventKind, InfrastructureCondition, LocationConnection, LocationView,
-    LocationVisibility, PlayerId, PlayerStateView, ResearchBranch, ResourceStockpiles, TransitKind,
-    VictoryState,
+    CommandCollapseState, EventKind, InfrastructureProjectViewKind, LocationConnection,
+    LocationView, LocationVisibility, PlayerId, PlayerStateView, ResearchBranch,
+    ResourceStockpiles, TransitKind, VictoryState,
 };
 
 pub(crate) fn render_status_lines(
@@ -197,12 +197,7 @@ pub(crate) fn render_location(location: &LocationView) -> String {
             " infra=[{}]",
             infrastructure
                 .iter()
-                .map(|infrastructure| match infrastructure.condition {
-                    InfrastructureCondition::Operational => {
-                        format!("{:?}", infrastructure.kind)
-                    }
-                    _ => format!("{:?}({:?})", infrastructure.kind, infrastructure.condition),
-                })
+                .map(render_infrastructure_family)
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -210,7 +205,14 @@ pub(crate) fn render_location(location: &LocationView) -> String {
     if let Some(projects) = &location.infrastructure_projects
         && !projects.is_empty()
     {
-        summary.push_str(&format!(" projects={projects:?}"));
+        summary.push_str(&format!(
+            " projects=[{}]",
+            projects
+                .iter()
+                .map(render_infrastructure_project)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     if let Some(economy) = &location.economy {
         summary.push_str(&format!(
@@ -226,6 +228,100 @@ pub(crate) fn render_location(location: &LocationView) -> String {
     }
 
     summary
+}
+
+pub(crate) fn render_location_details(location: &LocationView) -> String {
+    let mut lines = vec![
+        format!("#{} {}", location.location_id, location.name),
+        format!(
+            "visibility={:?} territory={:?}",
+            location.visibility, location.territory
+        ),
+    ];
+
+    if let Some(controller) = location.controller {
+        lines.push(format!("controller=P{}", controller.0));
+    }
+
+    let mut attributes = Vec::new();
+    if let Some(kind) = &location.kind {
+        attributes.push(format!("kind={kind:?}"));
+    }
+    if let Some(resource_richness) = &location.resource_richness {
+        attributes.push(format!("resources={resource_richness:?}"));
+    }
+    if let Some(energy_potential) = &location.energy_potential {
+        attributes.push(format!("energy={energy_potential:?}"));
+    }
+    if let Some(build_capacity) = &location.build_capacity {
+        attributes.push(format!("build={build_capacity:?}"));
+    }
+    if let Some(orbital_slots) = location.orbital_slots {
+        attributes.push(format!("orbital_slots={orbital_slots}"));
+    }
+    if !attributes.is_empty() {
+        lines.push(attributes.join(" "));
+    }
+
+    let mut status = Vec::new();
+    if let Some(relay_status) = &location.relay_status {
+        status.push(format!("relay={relay_status:?}"));
+    }
+    if let Some(has_environmental_hazard) = location.has_environmental_hazard {
+        status.push(format!("hazard={has_environmental_hazard}"));
+    }
+    if let Some(hostile_remnant_present) = location.hostile_remnant_present {
+        status.push(format!("remnant={hostile_remnant_present}"));
+    }
+    if let Some(pacification_ticks_remaining) = location.pacification_ticks_remaining
+        && pacification_ticks_remaining > 0
+    {
+        status.push(format!("pacification={pacification_ticks_remaining}"));
+    }
+    if !status.is_empty() {
+        lines.push(status.join(" "));
+    }
+
+    match &location.infrastructure {
+        Some(infrastructure) if !infrastructure.is_empty() => {
+            lines.push("Infrastructure:".to_owned());
+            lines.extend(
+                infrastructure
+                    .iter()
+                    .map(|family| format!("  {}", render_infrastructure_family(family))),
+            );
+        }
+        Some(_) => lines.push("Infrastructure: none".to_owned()),
+        None => lines.push("Infrastructure: unavailable".to_owned()),
+    }
+
+    match &location.infrastructure_projects {
+        Some(projects) if !projects.is_empty() => {
+            lines.push("Projects:".to_owned());
+            lines.extend(
+                projects
+                    .iter()
+                    .map(|project| format!("  {}", render_infrastructure_project(project))),
+            );
+        }
+        Some(_) => {}
+        None => {}
+    }
+
+    if let Some(economy) = &location.economy {
+        lines.push(format!(
+            "Economy: energy={} dc={} throughput={} connected={}",
+            economy.generated_energy,
+            economy.datacenter_capacity,
+            economy.empire_usable_throughput,
+            economy.connected_to_empire
+        ));
+    }
+    if let Some(stockpiles) = &location.stockpiles {
+        lines.push(format!("Stockpiles: {}", format_stockpiles(stockpiles)));
+    }
+
+    lines.join("\n")
 }
 
 pub(crate) fn render_event(event: &EventKind) -> String {
@@ -316,20 +412,29 @@ pub(crate) fn render_event(event: &EventKind) -> String {
         EventKind::InfrastructureRepairCompleted { location_id, kind } => {
             format!("repair completed at #{} {:?}", location_id, kind)
         }
-        EventKind::InfrastructureConstructionQueued {
+        EventKind::InfrastructureDevelopmentQueued {
             location_id,
             kind,
+            target_level,
             duration_ticks,
             cost,
         } => format!(
-            "construction queued at #{} {:?} duration={} cost={}",
+            "development queued at #{} {:?} -> L{} duration={} cost={}",
             location_id,
             kind,
+            target_level,
             duration_ticks,
             format_stockpiles(cost)
         ),
-        EventKind::InfrastructureConstructionCompleted { location_id, kind } => {
-            format!("construction completed at #{} {:?}", location_id, kind)
+        EventKind::InfrastructureDevelopmentCompleted {
+            location_id,
+            kind,
+            achieved_level,
+        } => {
+            format!(
+                "development completed at #{} {:?} -> L{}",
+                location_id, kind, achieved_level
+            )
         }
         EventKind::TransitDispatched {
             transit_id,
@@ -481,6 +586,42 @@ pub(crate) fn render_event(event: &EventKind) -> String {
             format!("victory declared for P{} ({})", winner.0, reason)
         }
     }
+}
+
+fn render_infrastructure_family(family: &starforge_core::InfrastructureFamilyView) -> String {
+    let mut states = Vec::new();
+    if family.degraded_levels > 0 {
+        states.push(format!("{} degraded", family.degraded_levels));
+    }
+    if family.offline_levels > 0 {
+        states.push(format!("{} offline", family.offline_levels));
+    }
+
+    if states.is_empty() {
+        format!("{:?} L{}", family.kind, family.level)
+    } else {
+        format!(
+            "{:?} L{} ({})",
+            family.kind,
+            family.level,
+            states.join(", ")
+        )
+    }
+}
+
+fn render_infrastructure_project(project: &starforge_core::InfrastructureProjectView) -> String {
+    let project_kind = match project.project_kind {
+        InfrastructureProjectViewKind::Repair => "repair",
+        InfrastructureProjectViewKind::Development => "develop",
+    };
+    format!(
+        "{} {:?} -> L{} {}/{}",
+        project_kind,
+        project.kind,
+        project.target_level,
+        project.total_ticks.saturating_sub(project.remaining_ticks),
+        project.total_ticks
+    )
 }
 
 pub(crate) fn render_victory(victory: &VictoryState) -> String {

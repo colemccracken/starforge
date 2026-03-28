@@ -19,16 +19,20 @@ pub use event::{EventDiscriminant, EventKind, EventRecord, IndexedEventRecord};
 pub use ids::{MatchSeed, PlayerId, SessionId, TickId};
 pub use replay::ReplayLog;
 pub use session::GameSession;
-pub use snapshot::Snapshot;
+pub use snapshot::{SNAPSHOT_VERSION, Snapshot, SnapshotError};
 pub use state::{
     AgentAssignment, BuildCapacity, CommandCollapseState, EnergyPotential, GameState,
-    HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition, InfrastructureKind,
-    InfrastructureProjectKind, InfrastructureProjectState, InfrastructureSeed, InfrastructureState,
-    LocationEconomyState, LocationKind, LocationState, LocationView, LocationVisibility,
-    PlayerEconomyState, PlayerResearchState, PlayerState, PlayerStateView, RelayStatus,
-    ResearchBranch, ResearchProjectState, ResourceRichness, ResourceStockpiles, StrategicPosition,
-    TerritoryState, ThreatLevel, ThroughputBudget, TrainingRunState, TransitKind, TransitState,
-    TransitView, VictoryState, VisibilityState,
+    HostileRemnantKind, HostileRemnantSeed, InfrastructureCondition, InfrastructureFamilyView,
+    InfrastructureKind, InfrastructureProjectKind, InfrastructureProjectState,
+    InfrastructureProjectView, InfrastructureProjectViewKind, InfrastructureSeed,
+    InfrastructureState, LocationEconomyState, LocationKind, LocationState, LocationView,
+    LocationVisibility, MAX_INFRASTRUCTURE_LEVEL, PlayerEconomyState, PlayerResearchState,
+    PlayerState, PlayerStateView, RelayStatus, ResearchBranch, ResearchProjectState,
+    ResourceRichness, ResourceStockpiles, StrategicPosition, TerritoryState, ThreatLevel,
+    ThroughputBudget, TrainingRunState, TransitKind, TransitState, TransitView, VictoryState,
+    VisibilityState, grouped_infrastructure_families, has_max_infrastructure_level,
+    has_queued_infrastructure_family_project, infrastructure_family_kinds,
+    infrastructure_family_level, infrastructure_family_view, select_infrastructure_repair_target,
 };
 
 #[cfg(test)]
@@ -1630,7 +1634,7 @@ mod tests {
                 player_id: PlayerId::new(1),
                 issued_at_tick: TickId::default(),
                 apply_at_tick: TickId::default(),
-                command: CommandKind::QueueInfrastructureConstruction {
+                command: CommandKind::QueueInfrastructureDevelopment {
                     location_id: 1,
                     infrastructure_kind: InfrastructureKind::Datacenter,
                 },
@@ -1651,9 +1655,10 @@ mod tests {
         );
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
-            EventKind::InfrastructureConstructionQueued {
+            EventKind::InfrastructureDevelopmentQueued {
                 location_id: 1,
                 kind: InfrastructureKind::Datacenter,
+                target_level: 2,
                 duration_ticks: 3,
                 cost,
             } if *cost == ResourceStockpiles {
@@ -1678,15 +1683,16 @@ mod tests {
         assert_eq!(session.state().players[0].throughput.available, 60);
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
-            EventKind::InfrastructureConstructionCompleted {
+            EventKind::InfrastructureDevelopmentCompleted {
                 location_id: 1,
                 kind: InfrastructureKind::Datacenter,
+                achieved_level: 2,
             }
         )));
     }
 
     #[test]
-    fn duplicate_same_kind_repairs_can_be_queued_and_completed() {
+    fn same_family_repairs_are_rejected_while_a_repair_is_already_queued() {
         let mut session = GameSession::new(
             SessionId::new(1),
             GameConfig::default(),
@@ -1716,43 +1722,17 @@ mod tests {
                     infrastructure_kind: InfrastructureKind::Datacenter,
                 },
             })
-            .expect("second duplicate repair should be accepted");
+            .expect("second repair should still be accepted for apply-time validation");
 
         assert_eq!(
             session.state().locations[0].infrastructure_projects.len(),
-            2
+            1
         );
-
-        session.advance_tick();
-        session.advance_tick();
-
-        let repaired_datacenters = session.state().locations[0]
-            .infrastructure
-            .iter()
-            .filter(|infrastructure| {
-                infrastructure.kind == InfrastructureKind::Datacenter
-                    && infrastructure.condition == InfrastructureCondition::Operational
-            })
-            .count();
-
-        assert_eq!(repaired_datacenters, 2);
-        assert_eq!(session.state().players[0].throughput.available, 60);
-        assert_eq!(
-            session
-                .event_log()
-                .iter()
-                .filter(|event| {
-                    matches!(
-                        &event.kind,
-                        EventKind::InfrastructureRepairCompleted {
-                            location_id: 1,
-                            kind: InfrastructureKind::Datacenter,
-                        }
-                    )
-                })
-                .count(),
-            2
-        );
+        assert!(session.event_log().iter().any(|event| matches!(
+            &event.kind,
+            EventKind::CommandRejected { error, .. }
+                if error.code == "infrastructure_project_already_queued"
+        )));
     }
 
     #[test]
@@ -1816,7 +1796,7 @@ mod tests {
                 player_id: PlayerId::new(1),
                 issued_at_tick: TickId::default(),
                 apply_at_tick: TickId::default(),
-                command: CommandKind::QueueInfrastructureConstruction {
+                command: CommandKind::QueueInfrastructureDevelopment {
                     location_id: 2,
                     infrastructure_kind: InfrastructureKind::Datacenter,
                 },
@@ -2510,7 +2490,7 @@ mod tests {
         session
             .issue_command_now(
                 PlayerId::new(2),
-                CommandKind::QueueInfrastructureConstruction {
+                CommandKind::QueueInfrastructureDevelopment {
                     location_id: 2,
                     infrastructure_kind: InfrastructureKind::MiningSite,
                 },
@@ -2519,7 +2499,7 @@ mod tests {
         session
             .issue_command_now(
                 PlayerId::new(2),
-                CommandKind::QueueInfrastructureConstruction {
+                CommandKind::QueueInfrastructureDevelopment {
                     location_id: 2,
                     infrastructure_kind: InfrastructureKind::Datacenter,
                 },
@@ -2551,16 +2531,18 @@ mod tests {
             .expect("attacker event feed should be available");
         assert!(attacker_events.iter().any(|event| matches!(
             &event.kind,
-            EventKind::InfrastructureConstructionCompleted {
+            EventKind::InfrastructureDevelopmentCompleted {
                 location_id: 2,
                 kind,
+                ..
             } if *kind == InfrastructureKind::Datacenter
         )));
         assert!(!attacker_events.iter().any(|event| matches!(
             &event.kind,
-            EventKind::InfrastructureConstructionCompleted {
+            EventKind::InfrastructureDevelopmentCompleted {
                 location_id: 2,
                 kind,
+                ..
             } if *kind == InfrastructureKind::MiningSite
         )));
     }

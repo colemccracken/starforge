@@ -27,7 +27,7 @@ const AFTER_HELP: &str = r#"Command Quick Reference:
   starforge-cli claim --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli assault --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
   starforge-cli strike --session <PATH> --player <PLAYER> --origin <LOCATION> --destination <LOCATION>
-  starforge-cli build --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
+  starforge-cli develop --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
   starforge-cli repair --session <PATH> --player <PLAYER> --location <LOCATION> --kind <KIND>
   starforge-cli relay --session <PATH> --player <PLAYER> --location <LOCATION> --status <STATUS>
   starforge-cli budget --session <PATH> --player <PLAYER> --upkeep <N> --research <N> --training <N> --agents <N>
@@ -49,7 +49,7 @@ Prototype loop:
   2. Use `map` and `status` to inspect player-visible state.
   3. `survey` nearby neutral worlds, then `step` until arrival.
   4. If a surveyed world has `remnant=true`, use `pacify` and `step`.
-  5. `claim` cleared neutral worlds, then expand with `build` and `repair`.
+  5. `claim` cleared neutral worlds, then expand with `develop` and `repair`.
   6. Use `budget` to reserve research and training throughput, then use `research` and `train`.
   7. A completed tier 5 training run ends the match immediately.
 "#;
@@ -89,6 +89,7 @@ pub(crate) enum Command {
     Claim(TransitArgs),
     Assault(TransitArgs),
     Strike(TransitArgs),
+    #[command(name = "develop", alias = "build")]
     Build(InfrastructureArgs),
     Repair(InfrastructureArgs),
     Relay(RelayArgs),
@@ -156,6 +157,7 @@ pub(crate) enum PlayerScopedCommand {
     Claim(TransitSpec),
     Assault(TransitSpec),
     Strike(TransitSpec),
+    #[command(name = "develop", alias = "build")]
     Build(ScopedInfrastructureArgs),
     Repair(ScopedInfrastructureArgs),
     Relay(ScopedRelayArgs),
@@ -363,7 +365,7 @@ impl PlayerScopedCommand {
                 destination_location_id: args.destination,
             }),
             Self::Build(args) => Some(
-                starforge_core::CommandKind::QueueInfrastructureConstruction {
+                starforge_core::CommandKind::QueueInfrastructureDevelopment {
                     location_id: args.location,
                     infrastructure_kind: args.kind.clone(),
                 },
@@ -400,7 +402,7 @@ impl PlayerScopedCommand {
             Self::Claim(_) => Some("claim expedition queued"),
             Self::Assault(_) => Some("assault expedition queued"),
             Self::Strike(_) => Some("strategic strike queued"),
-            Self::Build(_) => Some("construction queued"),
+            Self::Build(_) => Some("development queued"),
             Self::Repair(_) => Some("repair queued"),
             Self::Relay(_) => Some("relay status updated"),
             Self::Budget(_) => Some("throughput budget updated"),

@@ -76,16 +76,16 @@ entries:
       - command_kind.queue_infrastructure_repair
     related_ids:
       - economy.infrastructure_maintenance
-  - id: commands.queue_infrastructure_construction
-    title: QueueInfrastructureConstruction
+  - id: commands.queue_infrastructure_development
+    title: QueueInfrastructureDevelopment
     kind: command
     parent_id: commands
-    summary: Queues construction of currently buildable economic infrastructure.
+    summary: Queues one infrastructure-family development step at an owned location.
     status: implemented
     implementation_keys:
-      - command_kind.queue_infrastructure_construction
+      - command_kind.queue_infrastructure_development
     related_ids:
-      - economy.infrastructure_construction
+      - economy.infrastructure_development
   - id: commands.dispatch_survey_transit
     title: DispatchSurveyTransit
     kind: command

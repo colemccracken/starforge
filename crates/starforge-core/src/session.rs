@@ -6,13 +6,16 @@ use std::{
 use crate::{
     BuildCapacity, CommandEnvelope, CommandKind, EnergyPotential, EventKind, EventRecord,
     GameConfig, GameState, IndexedEventRecord, InfrastructureCondition, InfrastructureKind,
-    InfrastructureProjectKind, InfrastructureProjectState, LocationConnection, LocationKind,
-    LocationState, LocationView, LocationVisibility, PlayerId, PlayerStateView, RelayStatus,
-    ReplayLog, ResearchBranch, ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId,
-    Snapshot, StrategicPosition, TerritoryState, TickId, TransitKind, TransitState, TransitView,
-    ValidationError, buildable_infrastructure_kinds, command::format_reserved_throughput_shortfall,
-    construction_preview, is_unique_infrastructure, repair_preview, research_preview,
-    strategic_strike_cost, training_preview,
+    InfrastructureProjectKind, InfrastructureProjectState, InfrastructureProjectView,
+    LocationConnection, LocationKind, LocationState, LocationView, LocationVisibility,
+    MAX_INFRASTRUCTURE_LEVEL, PlayerId, PlayerStateView, RelayStatus, ReplayLog, ResearchBranch,
+    ResourceRichness, ResourceStockpiles, ScenarioConfig, SessionId, Snapshot, StrategicPosition,
+    TerritoryState, TickId, TransitKind, TransitState, TransitView, ValidationError,
+    command::format_reserved_throughput_shortfall, construction_preview,
+    grouped_infrastructure_families, has_max_infrastructure_level,
+    has_queued_infrastructure_family_project, infrastructure_family_kinds,
+    infrastructure_family_level, repair_preview, research_preview,
+    select_infrastructure_repair_target, strategic_strike_cost, training_preview,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,7 +69,7 @@ impl GameSession {
         }
     }
 
-    pub fn from_snapshot_json(json: &str) -> Result<Self, serde_json::Error> {
+    pub fn from_snapshot_json(json: &str) -> Result<Self, crate::SnapshotError> {
         Snapshot::from_json(json).map(Self::from_snapshot)
     }
 
@@ -157,10 +160,19 @@ impl GameSession {
                             kind: completion.kind.clone(),
                         }
                     }
-                    InfrastructureProjectKind::Construction { .. } => {
-                        EventKind::InfrastructureConstructionCompleted {
+                    InfrastructureProjectKind::Development { .. } => {
+                        EventKind::InfrastructureDevelopmentCompleted {
                             location_id: completion.location_id,
                             kind: completion.kind.clone(),
+                            achieved_level: infrastructure_family_level(
+                                self.state
+                                    .locations
+                                    .iter()
+                                    .find(|location| location.location_id == completion.location_id)
+                                    .map(|location| location.infrastructure.as_slice())
+                                    .unwrap_or(&[]),
+                                completion.kind.clone(),
+                            ),
                         }
                     }
                 };
@@ -505,10 +517,10 @@ impl GameSession {
             } => {
                 self.apply_queue_infrastructure_repair(player_id, location_id, infrastructure_kind)
             }
-            CommandKind::QueueInfrastructureConstruction {
+            CommandKind::QueueInfrastructureDevelopment {
                 location_id,
                 infrastructure_kind,
-            } => self.apply_queue_infrastructure_construction(
+            } => self.apply_queue_infrastructure_development(
                 player_id,
                 location_id,
                 infrastructure_kind,
@@ -755,6 +767,18 @@ impl GameSession {
             target_index,
         ) = {
             let location = self.controlled_location_state(player_id, location_id)?;
+            if has_queued_infrastructure_family_project(
+                &location.infrastructure_projects,
+                infrastructure_kind.clone(),
+            ) {
+                return Err(ValidationError {
+                    code: "infrastructure_project_already_queued".to_owned(),
+                    message:
+                        "a repair or development project is already queued for this infrastructure family"
+                            .to_owned(),
+                });
+            }
+
             let queued_target_indices: Vec<usize> = location
                 .infrastructure_projects
                 .iter()
@@ -767,15 +791,11 @@ impl GameSession {
                 })
                 .collect();
 
-            let (target_index, infrastructure) = location
-                .infrastructure
-                .iter()
-                .enumerate()
-                .find(|(index, infrastructure)| {
-                    infrastructure.kind == infrastructure_kind
-                        && infrastructure.condition != InfrastructureCondition::Operational
-                        && !queued_target_indices.contains(index)
-                })
+            let (target_index, condition) = select_infrastructure_repair_target(
+                &location.infrastructure,
+                infrastructure_kind.clone(),
+                &queued_target_indices,
+            )
                 .ok_or(ValidationError {
                     code: if location
                         .infrastructure
@@ -803,7 +823,7 @@ impl GameSession {
                 location.economy.connected_to_empire,
                 location.build_capacity.clone(),
                 location.has_environmental_hazard,
-                infrastructure.condition.clone(),
+                condition,
                 target_index,
             )
         };
@@ -875,40 +895,41 @@ impl GameSession {
         }])
     }
 
-    fn apply_queue_infrastructure_construction(
+    fn apply_queue_infrastructure_development(
         &mut self,
         player_id: PlayerId,
         location_id: u32,
         infrastructure_kind: InfrastructureKind,
     ) -> Result<Vec<EventKind>, ValidationError> {
-        if !buildable_infrastructure_kinds().contains(&infrastructure_kind) {
-            return Err(ValidationError {
-                code: "unsupported_construction_kind".to_owned(),
-                message: "construction kind is not currently supported".to_owned(),
-            });
-        }
-
-        let (connected_to_empire, build_capacity, has_environmental_hazard) = {
+        let (connected_to_empire, build_capacity, has_environmental_hazard, target_level) = {
             let location = self.controlled_location_state(player_id, location_id)?;
-            if is_unique_infrastructure(&infrastructure_kind)
-                && (location
-                    .infrastructure
-                    .iter()
-                    .any(|infrastructure| infrastructure.kind == infrastructure_kind)
-                    || location.infrastructure_projects.iter().any(|project| {
-                        matches!(
-                            project.kind,
-                            InfrastructureProjectKind::Construction {
-                                infrastructure_kind: ref queued_kind,
-                            } if *queued_kind == infrastructure_kind
-                        )
-                    }))
-            {
+            if has_queued_infrastructure_family_project(
+                &location.infrastructure_projects,
+                infrastructure_kind.clone(),
+            ) {
                 return Err(ValidationError {
-                    code: "duplicate_unique_infrastructure".to_owned(),
+                    code: "infrastructure_project_already_queued".to_owned(),
                     message:
-                        "unique infrastructure cannot be constructed more than once per location"
+                        "a repair or development project is already queued for this infrastructure family"
                             .to_owned(),
+                });
+            }
+            let current_level =
+                infrastructure_family_level(&location.infrastructure, infrastructure_kind.clone());
+            if infrastructure_kind == InfrastructureKind::CommandNexus && current_level == 0 {
+                return Err(ValidationError {
+                    code: "manual_nexus_not_allowed".to_owned(),
+                    message:
+                        "command nexus progression must start from seeded colony or homeworld infrastructure"
+                            .to_owned(),
+                });
+            }
+            if has_max_infrastructure_level(&location.infrastructure, infrastructure_kind.clone()) {
+                return Err(ValidationError {
+                    code: "max_infrastructure_level".to_owned(),
+                    message: format!(
+                        "{infrastructure_kind:?} is already at the maximum level of {MAX_INFRASTRUCTURE_LEVEL}"
+                    ),
                 });
             }
 
@@ -916,6 +937,7 @@ impl GameSession {
                 location.economy.connected_to_empire,
                 location.build_capacity.clone(),
                 location.has_environmental_hazard,
+                current_level.saturating_add(1),
             )
         };
         let industry_level = self.player_state(player_id)?.research.industry_level;
@@ -946,7 +968,7 @@ impl GameSession {
             if !available.can_cover(&cost) {
                 return Err(ValidationError {
                     code: "insufficient_materials".to_owned(),
-                    message: "connected stockpiles cannot cover the requested construction"
+                    message: "connected stockpiles cannot cover the requested development"
                         .to_owned(),
                 });
             }
@@ -957,7 +979,7 @@ impl GameSession {
             if !location.stockpiles.can_cover(&cost) {
                 return Err(ValidationError {
                     code: "insufficient_materials".to_owned(),
-                    message: "local stockpiles cannot cover the requested construction".to_owned(),
+                    message: "local stockpiles cannot cover the requested development".to_owned(),
                 });
             }
 
@@ -969,7 +991,7 @@ impl GameSession {
         location
             .infrastructure_projects
             .push(InfrastructureProjectState {
-                kind: InfrastructureProjectKind::Construction {
+                kind: InfrastructureProjectKind::Development {
                     infrastructure_kind: infrastructure_kind.clone(),
                 },
                 remaining_ticks: duration_ticks,
@@ -977,9 +999,10 @@ impl GameSession {
             });
         self.state.recompute_economy();
 
-        Ok(vec![EventKind::InfrastructureConstructionQueued {
+        Ok(vec![EventKind::InfrastructureDevelopmentQueued {
             location_id,
             kind: infrastructure_kind,
+            target_level,
             duration_ticks,
             cost,
         }])
@@ -2554,7 +2577,7 @@ impl GameSession {
             | EventKind::EconomyUpdated { .. }
             | EventKind::AgentAssigned { .. }
             | EventKind::InfrastructureRepairQueued { .. }
-            | EventKind::InfrastructureConstructionQueued { .. }
+            | EventKind::InfrastructureDevelopmentQueued { .. }
             | EventKind::TransitDispatched { .. }
             | EventKind::TransitArrived { .. }
             | EventKind::LocationSurveyed { .. }
@@ -2574,7 +2597,9 @@ impl GameSession {
                 location_id, kind, ..
             }
             | EventKind::InfrastructureRepairCompleted { location_id, kind }
-            | EventKind::InfrastructureConstructionCompleted { location_id, kind } => {
+            | EventKind::InfrastructureDevelopmentCompleted {
+                location_id, kind, ..
+            } => {
                 self.location_is_controlled_by_player(player_id, *location_id)
                     || (self.location_is_currently_contested(*location_id)
                         && self.location_is_observed_by_player(player_id, *location_id)
@@ -2927,8 +2952,8 @@ fn project_location_for_player(
             relay_status: Some(location.relay_status.clone()),
             orbital_slots: Some(location.orbital_slots),
             has_environmental_hazard: Some(location.has_environmental_hazard),
-            infrastructure: Some(location.infrastructure.clone()),
-            infrastructure_projects: Some(location.infrastructure_projects.clone()),
+            infrastructure: Some(grouped_infrastructure_families(&location.infrastructure)),
+            infrastructure_projects: Some(project_infrastructure_projects(location)),
             economy: Some(location.economy.clone()),
             stockpiles: Some(location.stockpiles.clone()),
             hostile_remnant_present: Some(location.hostile_remnant.is_some()),
@@ -2960,12 +2985,12 @@ fn project_location_for_player(
             infrastructure: Some(if restricted_contested_view {
                 sanitize_contested_infrastructure(&location.infrastructure)
             } else {
-                location.infrastructure.clone()
+                grouped_infrastructure_families(&location.infrastructure)
             }),
             infrastructure_projects: if restricted_contested_view {
                 None
             } else {
-                Some(location.infrastructure_projects.clone())
+                Some(project_infrastructure_projects(location))
             },
             economy: if restricted_contested_view {
                 None
@@ -3028,6 +3053,34 @@ fn project_location_for_player(
     }
 }
 
+fn project_infrastructure_projects(location: &LocationState) -> Vec<InfrastructureProjectView> {
+    infrastructure_family_kinds()
+        .iter()
+        .filter_map(|kind| {
+            location
+                .infrastructure_projects
+                .iter()
+                .find(|project| project.kind.infrastructure_kind() == kind)
+                .map(|project| InfrastructureProjectView {
+                    kind: kind.clone(),
+                    project_kind: project.kind.view_kind(),
+                    remaining_ticks: project.remaining_ticks,
+                    total_ticks: project.total_ticks,
+                    target_level: match project.kind {
+                        InfrastructureProjectKind::Repair { .. } => {
+                            infrastructure_family_level(&location.infrastructure, kind.clone())
+                        }
+                        InfrastructureProjectKind::Development { .. } => {
+                            infrastructure_family_level(&location.infrastructure, kind.clone())
+                                .saturating_add(1)
+                                .min(MAX_INFRASTRUCTURE_LEVEL)
+                        }
+                    },
+                })
+        })
+        .collect()
+}
+
 fn project_routes_for_player(
     connections: &[LocationConnection],
     locations: &[LocationView],
@@ -3060,15 +3113,10 @@ fn project_transit_for_player(transit: &TransitState) -> TransitView {
 
 fn sanitize_contested_infrastructure(
     infrastructure: &[crate::InfrastructureState],
-) -> Vec<crate::InfrastructureState> {
-    infrastructure
-        .iter()
-        .filter(|infrastructure| is_major_visibility_infrastructure(&infrastructure.kind))
-        .cloned()
-        .map(|mut infrastructure| {
-            infrastructure.wear = 0;
-            infrastructure
-        })
+) -> Vec<crate::InfrastructureFamilyView> {
+    grouped_infrastructure_families(infrastructure)
+        .into_iter()
+        .filter(|family| is_major_visibility_infrastructure(&family.kind))
         .collect()
 }
 

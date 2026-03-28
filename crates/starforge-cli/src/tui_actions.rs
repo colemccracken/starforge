@@ -1,12 +1,14 @@
 use starforge_api::{PlayerFrameResponse, SessionMode, SessionPhase};
 use starforge_core::{
-    InfrastructureCondition, InfrastructureKind, InfrastructureProjectKind, LocationView,
-    LocationVisibility, PlayerId, RelayStatus, ResearchBranch, ResourceStockpiles, TerritoryState,
+    InfrastructureCondition, InfrastructureKind, LocationView, LocationVisibility,
+    MAX_INFRASTRUCTURE_LEVEL, PlayerId, RelayStatus, ResearchBranch, ResourceStockpiles,
+    TerritoryState,
     balance::{
-        buildable_infrastructure_kinds, construction_preview, is_unique_infrastructure,
-        repair_preview, research_preview, strategic_strike_cost, training_preview,
+        construction_preview, repair_preview, research_preview, strategic_strike_cost,
+        training_preview,
     },
     command::format_reserved_throughput_shortfall,
+    infrastructure_family_kinds,
 };
 
 use crate::{
@@ -369,7 +371,7 @@ pub(crate) fn form_title(form: &ActionFormState) -> String {
             destination_name,
             ..
         } => format!("{} {}", action_label(*action_id), destination_name),
-        ActionFormState::Build { location_id, .. } => format!("Build at #{location_id}"),
+        ActionFormState::Build { location_id, .. } => format!("Develop at #{location_id}"),
         ActionFormState::Repair { location_id, .. } => format!("Repair at #{location_id}"),
         ActionFormState::Budget { .. } => "Budget".to_owned(),
         ActionFormState::Research { .. } => "Research".to_owned(),
@@ -400,7 +402,7 @@ pub(crate) fn form_lines(form: &ActionFormState) -> Vec<String> {
             choices,
             ..
         } => {
-            let mut lines = vec!["Choose infrastructure to construct.".to_owned()];
+            let mut lines = vec!["Choose infrastructure family to develop.".to_owned()];
             lines.extend(render_choice_lines(choices, *selected_choice));
             lines.push("Up/Down choose  Enter confirm  Esc cancel".to_owned());
             lines
@@ -1038,13 +1040,13 @@ fn session_actions(frame: &PlayerFrameResponse) -> Vec<ActionItem> {
 
 fn build_action(frame: &PlayerFrameResponse, location: &LocationView) -> ActionItem {
     let preview = format!(
-        "Choose infrastructure to construct at #{}.",
+        "Choose infrastructure to develop at #{}.",
         location.location_id
     );
     ActionItem {
         id: ActionId::Build,
         group: ActionGroup::Location,
-        label: "Build…".to_owned(),
+        label: "Develop…".to_owned(),
         preview,
         availability: if commands_locked(frame) {
             disabled(COMMANDS_LOCKED_REASON)
@@ -1296,7 +1298,7 @@ fn build_choices(
         location.stockpiles.clone().unwrap_or_default()
     };
 
-    buildable_infrastructure_kinds()
+    infrastructure_family_kinds()
         .iter()
         .cloned()
         .map(|kind| {
@@ -1306,38 +1308,49 @@ fn build_choices(
                 has_environmental_hazard,
                 industry_level,
             );
+            let current_family = location
+                .infrastructure
+                .as_ref()
+                .and_then(|items| items.iter().find(|item| item.kind == kind));
+            let current_level = current_family.map(|family| family.level).unwrap_or(0);
+            let max_level = current_family
+                .map(|family| family.max_level)
+                .unwrap_or(MAX_INFRASTRUCTURE_LEVEL);
+            let queued = location
+                .infrastructure_projects
+                .as_ref()
+                .is_some_and(|projects| projects.iter().any(|project| project.kind == kind));
             let mut availability = ActionAvailability::Enabled;
-            if is_unique_infrastructure(&kind)
-                && (location
-                    .infrastructure
-                    .as_ref()
-                    .is_some_and(|items| items.iter().any(|item| item.kind == kind))
-                    || location
-                        .infrastructure_projects
-                        .as_ref()
-                        .is_some_and(|projects| {
-                            projects.iter().any(|project| {
-                                matches!(
-                                    project.kind,
-                                    InfrastructureProjectKind::Construction {
-                                        infrastructure_kind: ref queued_kind,
-                                    } if *queued_kind == kind
-                                )
-                            })
-                        }))
-            {
+            if kind == InfrastructureKind::CommandNexus && current_level == 0 {
                 availability = disabled(
-                    "unique infrastructure cannot be constructed more than once per location",
+                    "command nexus progression must start from seeded colony or homeworld infrastructure",
+                );
+            } else if current_level >= max_level {
+                availability =
+                    disabled("this infrastructure family is already at the maximum level");
+            } else if queued {
+                availability = disabled(
+                    "a repair or development project is already queued for this infrastructure family",
                 );
             } else if !stockpiles.can_cover(&preview.cost) {
-                availability = disabled("connected stockpiles cannot cover the requested project");
+                availability =
+                    disabled("connected stockpiles cannot cover the requested development");
             }
 
             ActionChoice {
                 label: format!("{kind:?}"),
                 value: kind,
                 details: format!(
-                    "cost {}  duration {}",
+                    "{}  cost {}  duration {}",
+                    if current_level == 0 {
+                        "Absent -> L1".to_owned()
+                    } else {
+                        format!(
+                            "L{} -> L{}",
+                            current_level,
+                            current_level.saturating_add(1).min(max_level)
+                        )
+                    },
                     format_stockpiles(&preview.cost),
                     preview.duration_ticks
                 ),
@@ -1354,7 +1367,6 @@ fn repair_choices(
     let Some(infrastructure) = &location.infrastructure else {
         return Vec::new();
     };
-    let queued = queued_repair_targets(location);
     let build_capacity = location
         .build_capacity
         .clone()
@@ -1372,26 +1384,36 @@ fn repair_choices(
         location.stockpiles.clone().unwrap_or_default()
     };
 
-    let mut kinds = infrastructure
+    infrastructure
         .iter()
-        .map(|item| item.kind.clone())
-        .collect::<Vec<_>>();
-    kinds.sort();
-    kinds.dedup();
+        .map(|family| {
+            let queued = location
+                .infrastructure_projects
+                .as_ref()
+                .is_some_and(|projects| projects.iter().any(|project| project.kind == family.kind));
+            let target_condition = if family.offline_levels > 0 {
+                Some(InfrastructureCondition::Offline)
+            } else if family.degraded_levels > 0 {
+                Some(InfrastructureCondition::Degraded)
+            } else {
+                None
+            };
 
-    kinds
-        .into_iter()
-        .map(|kind| {
-            let target = infrastructure.iter().enumerate().find(|(index, item)| {
-                item.kind == kind
-                    && item.condition != InfrastructureCondition::Operational
-                    && !queued.contains(index)
-            });
-
-            let (details, availability) = if let Some((_, infrastructure)) = target {
+            let (details, availability) = if queued {
+                (
+                    format!(
+                        "L{}  {}",
+                        family.level,
+                        damage_summary(family.degraded_levels, family.offline_levels)
+                    ),
+                    disabled(
+                        "a repair or development project is already queued for this infrastructure family",
+                    ),
+                )
+            } else if let Some(condition) = target_condition {
                 let preview = repair_preview(
-                    &kind,
-                    &infrastructure.condition,
+                    &family.kind,
+                    &condition,
                     build_capacity.clone(),
                     has_environmental_hazard,
                     industry_level,
@@ -1403,8 +1425,10 @@ fn repair_choices(
                 };
                 (
                     format!(
-                        "{:?}  cost {}  duration {}",
-                        infrastructure.condition,
+                        "L{}  {}  target {:?}  cost {}  duration {}",
+                        family.level,
+                        damage_summary(family.degraded_levels, family.offline_levels),
+                        condition,
                         format_stockpiles(&preview.cost),
                         preview.duration_ticks
                     ),
@@ -1420,8 +1444,8 @@ fn repair_choices(
             };
 
             ActionChoice {
-                label: format!("{kind:?}"),
-                value: kind,
+                label: format!("{:?}", family.kind),
+                value: family.kind.clone(),
                 details,
                 availability,
             }
@@ -1694,7 +1718,7 @@ fn action_label(action_id: ActionId) -> &'static str {
         ActionId::Claim => "Claim",
         ActionId::Assault => "Assault",
         ActionId::Strike => "Strike",
-        ActionId::Build => "Build",
+        ActionId::Build => "Develop",
         ActionId::Repair => "Repair",
         ActionId::Relay => "Toggle Relay",
         ActionId::Status => "Status Snapshot",
@@ -1716,7 +1740,7 @@ fn action_verb(action_id: ActionId) -> &'static str {
         ActionId::Claim => "claim",
         ActionId::Assault => "assault",
         ActionId::Strike => "strike",
-        ActionId::Build => "build",
+        ActionId::Build => "develop",
         ActionId::Repair => "repair",
         ActionId::Relay => "toggle relay for",
         ActionId::Status => "inspect",
@@ -1785,7 +1809,7 @@ fn has_operational_infrastructure(location: &LocationView, kind: InfrastructureK
     location.infrastructure.as_ref().is_some_and(|items| {
         items
             .iter()
-            .any(|item| item.kind == kind && item.condition == InfrastructureCondition::Operational)
+            .any(|item| item.kind == kind && item.operational_levels > 0)
     })
 }
 
@@ -1827,28 +1851,27 @@ fn materials_for_location(
     }
 }
 
-fn queued_repair_targets(location: &LocationView) -> Vec<usize> {
-    location
-        .infrastructure_projects
-        .as_ref()
-        .map(|projects| {
-            projects
-                .iter()
-                .filter_map(|project| match project.kind {
-                    InfrastructureProjectKind::Repair { target_index, .. } => Some(target_index),
-                    InfrastructureProjectKind::Construction { .. } => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn location_by_id(frame: &PlayerFrameResponse, location_id: u32) -> Option<&LocationView> {
     frame
         .view
         .locations
         .iter()
         .find(|location| location.location_id == location_id)
+}
+
+fn damage_summary(degraded_levels: u8, offline_levels: u8) -> String {
+    let mut parts = Vec::new();
+    if degraded_levels > 0 {
+        parts.push(format!("{degraded_levels} degraded"));
+    }
+    if offline_levels > 0 {
+        parts.push(format!("{offline_levels} offline"));
+    }
+    if parts.is_empty() {
+        "healthy".to_owned()
+    } else {
+        parts.join(", ")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1862,14 +1885,32 @@ enum LocationActionKind {
 mod tests {
     use starforge_api::{PlayerAlertKind, RunnerStatus, SessionMode, SessionPhase};
     use starforge_core::{
-        BuildCapacity, CommandCollapseState, EnergyPotential, InfrastructureCondition,
-        InfrastructureKind, InfrastructureProjectState, InfrastructureState, LocationEconomyState,
-        LocationKind, LocationView, LocationVisibility, PlayerEconomyState, PlayerId,
-        PlayerResearchState, RelayStatus, ResearchBranch, ResourceRichness, ResourceStockpiles,
-        TerritoryState, ThroughputBudget, TickId, VisibilityState,
+        BuildCapacity, CommandCollapseState, EnergyPotential, InfrastructureFamilyView,
+        InfrastructureKind, LocationEconomyState, LocationKind, LocationView, LocationVisibility,
+        PlayerEconomyState, PlayerId, PlayerResearchState, RelayStatus, ResearchBranch,
+        ResourceRichness, ResourceStockpiles, TerritoryState, ThroughputBudget, TickId,
+        VisibilityState,
     };
 
     use super::{ActionFormState, ActionId, action_by_id, derive_actions, repair_choices};
+
+    fn family_view(
+        kind: InfrastructureKind,
+        operational_levels: u8,
+        degraded_levels: u8,
+        offline_levels: u8,
+    ) -> InfrastructureFamilyView {
+        InfrastructureFamilyView {
+            kind,
+            level: operational_levels
+                .saturating_add(degraded_levels)
+                .saturating_add(offline_levels),
+            max_level: starforge_core::MAX_INFRASTRUCTURE_LEVEL,
+            operational_levels,
+            degraded_levels,
+            offline_levels,
+        }
+    }
 
     #[test]
     fn healthy_owned_world_disables_repair_action() {
@@ -1883,12 +1924,8 @@ mod tests {
     #[test]
     fn damaged_world_enables_repair_choice() {
         let mut frame = running_frame();
-        frame.view.locations[0].infrastructure = Some(vec![InfrastructureState {
-            kind: InfrastructureKind::Datacenter,
-            tier: 1,
-            condition: InfrastructureCondition::Offline,
-            wear: 100,
-        }]);
+        frame.view.locations[0].infrastructure =
+            Some(vec![family_view(InfrastructureKind::Datacenter, 0, 0, 1)]);
 
         let choices = repair_choices(&frame, &frame.view.locations[0]);
         assert!(choices.iter().any(|choice| {
@@ -2029,18 +2066,8 @@ mod tests {
         frame.view.model_tier = 2;
         frame.view.throughput.reserved_for_training = 35;
         frame.view.locations[0].infrastructure = Some(vec![
-            InfrastructureState {
-                kind: InfrastructureKind::CommandNexus,
-                tier: 1,
-                condition: InfrastructureCondition::Operational,
-                wear: 0,
-            },
-            InfrastructureState {
-                kind: InfrastructureKind::Datacenter,
-                tier: 1,
-                condition: InfrastructureCondition::Operational,
-                wear: 0,
-            },
+            family_view(InfrastructureKind::CommandNexus, 1, 0, 0),
+            family_view(InfrastructureKind::Datacenter, 1, 0, 0),
         ]);
 
         let form =
@@ -2164,26 +2191,11 @@ mod tests {
                         orbital_slots: Some(3),
                         has_environmental_hazard: Some(false),
                         infrastructure: Some(vec![
-                            InfrastructureState {
-                                kind: InfrastructureKind::CommandNexus,
-                                tier: 1,
-                                condition: InfrastructureCondition::Operational,
-                                wear: 0,
-                            },
-                            InfrastructureState {
-                                kind: InfrastructureKind::Datacenter,
-                                tier: 1,
-                                condition: InfrastructureCondition::Operational,
-                                wear: 0,
-                            },
-                            InfrastructureState {
-                                kind: InfrastructureKind::MilitaryWorks,
-                                tier: 1,
-                                condition: InfrastructureCondition::Operational,
-                                wear: 0,
-                            },
+                            family_view(InfrastructureKind::CommandNexus, 1, 0, 0),
+                            family_view(InfrastructureKind::Datacenter, 1, 0, 0),
+                            family_view(InfrastructureKind::MilitaryWorks, 1, 0, 0),
                         ]),
-                        infrastructure_projects: Some(Vec::<InfrastructureProjectState>::new()),
+                        infrastructure_projects: Some(Vec::new()),
                         economy: Some(LocationEconomyState::default()),
                         stockpiles: Some(ResourceStockpiles::default()),
                         hostile_remnant_present: Some(false),
@@ -2204,7 +2216,7 @@ mod tests {
                         orbital_slots: Some(2),
                         has_environmental_hazard: Some(false),
                         infrastructure: Some(Vec::new()),
-                        infrastructure_projects: Some(Vec::<InfrastructureProjectState>::new()),
+                        infrastructure_projects: Some(Vec::new()),
                         economy: Some(LocationEconomyState::default()),
                         stockpiles: Some(ResourceStockpiles::default()),
                         hostile_remnant_present: Some(false),

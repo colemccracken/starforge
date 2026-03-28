@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use starforge_content::{ContentError, load_compiled_scenario};
 use starforge_core::{
     CommandKind, EventRecord, GameConfig, GameSession, PlayerId, PlayerStateView, ScenarioConfig,
-    SessionId, TickId, ValidationError, VictoryState,
+    SessionId, SnapshotError, TickId, ValidationError, VictoryState,
 };
 use starforge_taxonomy::{TaxonomyDocument, TaxonomyError, build_taxonomy_document};
 
@@ -180,7 +180,8 @@ enum ApiRouteError {
     Taxonomy(TaxonomyError),
     Bootstrap(ApiBootstrapError),
     Validation(ValidationError),
-    Snapshot(serde_json::Error),
+    Snapshot(SnapshotError),
+    SnapshotJson(serde_json::Error),
     SessionNotFound(SessionId),
     LockPoisoned,
     Live(live::LiveSessionError),
@@ -218,7 +219,8 @@ impl fmt::Display for ApiRouteError {
             Self::Taxonomy(error) => write!(f, "{error}"),
             Self::Bootstrap(error) => write!(f, "{error}"),
             Self::Validation(error) => write!(f, "{}", error.message),
-            Self::Snapshot(error) => write!(f, "failed to parse snapshot json: {error}"),
+            Self::Snapshot(error) => write!(f, "{error}"),
+            Self::SnapshotJson(error) => write!(f, "failed to parse snapshot json: {error}"),
             Self::SessionNotFound(session_id) => {
                 write!(f, "session {} was not found", session_id.0)
             }
@@ -274,9 +276,15 @@ impl From<ValidationError> for ApiRouteError {
     }
 }
 
+impl From<SnapshotError> for ApiRouteError {
+    fn from(error: SnapshotError) -> Self {
+        Self::Snapshot(error)
+    }
+}
+
 impl From<serde_json::Error> for ApiRouteError {
     fn from(error: serde_json::Error) -> Self {
-        Self::Snapshot(error)
+        Self::SnapshotJson(error)
     }
 }
 
@@ -303,6 +311,11 @@ impl IntoResponse for ApiRouteError {
             Self::Snapshot(error) => (
                 StatusCode::BAD_REQUEST,
                 "snapshot_error".to_owned(),
+                error.to_string(),
+            ),
+            Self::SnapshotJson(error) => (
+                StatusCode::BAD_REQUEST,
+                "snapshot_json".to_owned(),
                 format!("failed to parse snapshot json: {error}"),
             ),
             Self::SessionNotFound(session_id) => (
@@ -339,6 +352,11 @@ impl IntoResponse for ApiRouteError {
                 live::LiveSessionError::Json(error) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "live_session_json".to_owned(),
+                    error.to_string(),
+                ),
+                live::LiveSessionError::Snapshot(error) => (
+                    StatusCode::BAD_REQUEST,
+                    "live_session_snapshot".to_owned(),
                     error.to_string(),
                 ),
                 live::LiveSessionError::Content(error) => (

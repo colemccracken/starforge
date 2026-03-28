@@ -107,7 +107,7 @@ entries:
     status: implemented
     reference_sections:
       - Planetary Attributes
-      - Construction Rule
+      - Development Rule
     implementation_keys:
       - build_capacity.constrained
       - build_capacity.standard

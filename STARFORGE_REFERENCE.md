@@ -251,9 +251,9 @@ Each owned location has a resource profile and development ceiling. Worlds diffe
 
 No world is universally best. Some excel at compute, some at fuel or defense, and some mainly matter because they sit on important routes.
 
-### Construction Rule
+### Development Rule
 
-Construction is local to a location's build queues, but connected locations may draw from empire-wide stockpiles. Disconnected locations can only use their own local stockpiles until the relay network is restored.
+Infrastructure progresses locally through per-family development queues, one level at a time from level 1 through level 5. Connected locations may draw from empire-wide stockpiles, while disconnected locations can only use their own local stockpiles until the relay network is restored.
 
 This keeps logistics legible without requiring manual cargo routing in the first design.
 
@@ -793,6 +793,8 @@ The following scenarios should remain valid whenever the document is revised:
 | Sensor Array | Extends survey and detection coverage |
 | Compute Platform | Provides offworld compute in orbit |
 | Ascension Complex | Hosts the final superintelligence victory project |
+
+Each infrastructure family on a world follows a single progression path rather than allowing arbitrary duplicate build entries in the player-facing model.
 
 ### Unit Families
 

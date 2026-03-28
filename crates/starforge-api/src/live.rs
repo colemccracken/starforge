@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use starforge_content::ContentError;
 use starforge_core::{
     CommandKind, EventKind, GameSession, IndexedEventRecord, LocationConnection,
-    LocationVisibility, PlayerId, PlayerStateView, SessionId, TickId, ValidationError,
-    VictoryState,
+    LocationVisibility, PlayerId, PlayerStateView, SessionId, SnapshotError, TickId,
+    ValidationError, VictoryState,
 };
 use tokio::{
     sync::{Mutex, Notify, RwLock},
@@ -24,6 +24,7 @@ use crate::{ApiBootstrapError, ApiServerConfig, load_session_summary};
 
 const DEFAULT_TICK_INTERVAL_MS: u64 = 250;
 const ALLOWED_TICK_INTERVAL_MS: [u64; 6] = [125, 250, 500, 1_000, 2_500, 5_000];
+const PERSISTED_SESSION_META_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,7 +171,7 @@ struct PersistedSessionMeta {
 impl PersistedSessionMeta {
     fn from_state(state: &LiveSessionState) -> Self {
         Self {
-            version: 1,
+            version: PERSISTED_SESSION_META_VERSION,
             session_id: state.session.session_id(),
             mode: state.mode.clone(),
             phase: state.phase.clone(),
@@ -188,6 +189,7 @@ pub enum LiveSessionError {
     Invalid(String),
     Io(std::io::Error),
     Json(serde_json::Error),
+    Snapshot(SnapshotError),
     Content(ContentError),
     Validation(ValidationError),
 }
@@ -200,6 +202,7 @@ impl fmt::Display for LiveSessionError {
             }
             Self::Io(error) => write!(f, "{error}"),
             Self::Json(error) => write!(f, "{error}"),
+            Self::Snapshot(error) => write!(f, "{error}"),
             Self::Content(error) => write!(f, "{error}"),
             Self::Validation(error) => write!(f, "{error}"),
         }
@@ -223,6 +226,12 @@ impl From<serde_json::Error> for LiveSessionError {
 impl From<ContentError> for LiveSessionError {
     fn from(error: ContentError) -> Self {
         Self::Content(error)
+    }
+}
+
+impl From<SnapshotError> for LiveSessionError {
+    fn from(error: SnapshotError) -> Self {
+        Self::Snapshot(error)
     }
 }
 
@@ -279,6 +288,12 @@ impl SessionRegistry {
             let paths = LiveStorePaths::new(&config.live_store_path, session_id);
             let meta: PersistedSessionMeta =
                 serde_json::from_str(&fs::read_to_string(&paths.meta_path)?)?;
+            if meta.version != PERSISTED_SESSION_META_VERSION {
+                return Err(LiveSessionError::Invalid(format!(
+                    "live session metadata version {} is unsupported; expected version {}",
+                    meta.version, PERSISTED_SESSION_META_VERSION
+                )));
+            }
             let snapshot_json = fs::read_to_string(&paths.snapshot_path)?;
             let session = GameSession::from_snapshot_json(&snapshot_json)?;
             let handle = Arc::new(LiveSessionHandle::new(

@@ -80,15 +80,17 @@ pub enum EventKind {
         location_id: u32,
         kind: InfrastructureKind,
     },
-    InfrastructureConstructionQueued {
+    InfrastructureDevelopmentQueued {
         location_id: u32,
         kind: InfrastructureKind,
+        target_level: u8,
         duration_ticks: u32,
         cost: ResourceStockpiles,
     },
-    InfrastructureConstructionCompleted {
+    InfrastructureDevelopmentCompleted {
         location_id: u32,
         kind: InfrastructureKind,
+        achieved_level: u8,
     },
     TransitDispatched {
         transit_id: u32,
@@ -217,8 +219,8 @@ pub enum EventDiscriminant {
     InfrastructureConditionChanged,
     InfrastructureRepairQueued,
     InfrastructureRepairCompleted,
-    InfrastructureConstructionQueued,
-    InfrastructureConstructionCompleted,
+    InfrastructureDevelopmentQueued,
+    InfrastructureDevelopmentCompleted,
     TransitDispatched,
     TransitArrived,
     LocationSurveyed,
@@ -267,11 +269,11 @@ impl From<&EventKind> for EventDiscriminant {
             }
             EventKind::InfrastructureRepairQueued { .. } => Self::InfrastructureRepairQueued,
             EventKind::InfrastructureRepairCompleted { .. } => Self::InfrastructureRepairCompleted,
-            EventKind::InfrastructureConstructionQueued { .. } => {
-                Self::InfrastructureConstructionQueued
+            EventKind::InfrastructureDevelopmentQueued { .. } => {
+                Self::InfrastructureDevelopmentQueued
             }
-            EventKind::InfrastructureConstructionCompleted { .. } => {
-                Self::InfrastructureConstructionCompleted
+            EventKind::InfrastructureDevelopmentCompleted { .. } => {
+                Self::InfrastructureDevelopmentCompleted
             }
             EventKind::TransitDispatched { .. } => Self::TransitDispatched,
             EventKind::TransitArrived { .. } => Self::TransitArrived,

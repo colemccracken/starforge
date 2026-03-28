@@ -108,22 +108,22 @@ entries:
     status: implemented
     implementation_keys:
       - event_kind.infrastructure_repair_completed
-  - id: events.infrastructure_construction_queued
-    title: InfrastructureConstructionQueued
+  - id: events.infrastructure_development_queued
+    title: InfrastructureDevelopmentQueued
     kind: event
     parent_id: events
-    summary: Emits queued construction duration and cost for new infrastructure.
+    summary: Emits queued development duration, cost, and target level for an infrastructure family.
     status: implemented
     implementation_keys:
-      - event_kind.infrastructure_construction_queued
-  - id: events.infrastructure_construction_completed
-    title: InfrastructureConstructionCompleted
+      - event_kind.infrastructure_development_queued
+  - id: events.infrastructure_development_completed
+    title: InfrastructureDevelopmentCompleted
     kind: event
     parent_id: events
-    summary: Emits when a construction project adds a new infrastructure instance.
+    summary: Emits when a development project raises an infrastructure family to its next level.
     status: implemented
     implementation_keys:
-      - event_kind.infrastructure_construction_completed
+      - event_kind.infrastructure_development_completed
   - id: events.transit_dispatched
     title: TransitDispatched
     kind: event

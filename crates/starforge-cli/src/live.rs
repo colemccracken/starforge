@@ -33,8 +33,8 @@ use tokio::{sync::mpsc, time::sleep};
 use crate::{
     cli::{PlayerEventsArgs, PlayerScopedCommand, parse_player_scoped_command},
     render::{
-        format_stockpiles, render_collapse, render_event, render_location, render_map_lines,
-        render_status_lines,
+        format_stockpiles, render_collapse, render_event, render_location_details,
+        render_map_lines, render_status_lines,
     },
     tui_actions::{
         ActionFormState, ActionGroup, ActionId, FormSubmit, PaneFocus, action_by_id,
@@ -975,7 +975,7 @@ fn draw_details(
         .view
         .locations
         .get(state.selected_location_index)
-        .map(render_location)
+        .map(render_location_details)
         .unwrap_or_else(|| "No location selected".to_owned());
     let hints = action_hints(live_frame, state.selected_location_index).join("\n");
     let content = if hints.is_empty() {
@@ -1153,7 +1153,7 @@ fn action_hints(frame: &PlayerFrameResponse, selected_location_index: usize) -> 
     if location.infrastructure.as_ref().is_some_and(|infra| {
         infra
             .iter()
-            .any(|item| item.condition != starforge_core::InfrastructureCondition::Operational)
+            .any(|item| item.degraded_levels > 0 || item.offline_levels > 0)
     }) {
         hints.push("This world has damaged infrastructure and may need repair.".to_owned());
     }
