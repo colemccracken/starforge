@@ -222,15 +222,6 @@ impl TuiState {
                 let drop_count = self.unread_alerts.len() - 20;
                 self.unread_alerts.drain(..drop_count);
             }
-            if let Some(location_id) = frame.alerts.iter().find_map(|alert| alert.location_id)
-                && let Some(index) = frame
-                    .view
-                    .locations
-                    .iter()
-                    .position(|location| location.location_id == location_id)
-            {
-                self.selected_location_index = index;
-            }
         }
 
         self.reconcile_selected_action(frame);
@@ -1439,12 +1430,21 @@ mod tests {
     }
 
     #[test]
-    fn apply_frame_retargets_alerted_location() {
+    fn apply_frame_preserves_selected_location_when_alerts_arrive() {
         let mut state = TuiState::from_frame(&crate::live_test_frame());
+        state.select_next_location(&crate::live_test_frame());
         let frame = crate::live_test_frame();
         state.apply_frame(&frame);
         assert_eq!(state.selected_location_index, 1);
         assert_eq!(state.selected_action_id, Some(ActionId::Survey));
+    }
+
+    #[test]
+    fn from_frame_does_not_retarget_selected_location_for_alerts() {
+        let state = TuiState::from_frame(&crate::live_test_frame());
+        assert_eq!(state.selected_location_index, 0);
+        assert_eq!(state.selected_action_id, Some(ActionId::Build));
+        assert_eq!(state.unread_alerts.len(), 1);
     }
 
     #[test]
