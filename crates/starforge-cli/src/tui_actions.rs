@@ -1644,7 +1644,9 @@ fn transit_target_availability(
                 && location.territory == TerritoryState::Owned
             {
                 disabled("assault requires a non-owned destination")
-            } else if location.controller.is_none() {
+            } else if location.controller.is_none()
+                && !has_stale_location_intel(frame, location.location_id)
+            {
                 disabled("assault expeditions currently require an enemy-controlled destination")
             } else {
                 ActionAvailability::Enabled
@@ -1657,7 +1659,9 @@ fn transit_target_availability(
                 disabled("strategic strikes cannot target a destroyed world")
             } else if location.controller == Some(frame.view.player_id) {
                 disabled("strategic strikes require a non-owned destination")
-            } else if location.controller.is_none() {
+            } else if location.controller.is_none()
+                && !has_stale_location_intel(frame, location.location_id)
+            {
                 disabled("strategic strikes currently require an enemy-controlled destination")
             } else {
                 ActionAvailability::Enabled
@@ -1770,6 +1774,14 @@ fn ensure_choice_enabled<T>(choice: &ActionChoice<T>) -> Result<(), String> {
 
 fn commands_locked(frame: &PlayerFrameResponse) -> bool {
     frame.runner.mode == SessionMode::Competitive && frame.runner.phase == SessionPhase::Lobby
+}
+
+fn has_stale_location_intel(frame: &PlayerFrameResponse, location_id: u32) -> bool {
+    frame
+        .view
+        .visibility
+        .stale_location_ids
+        .contains(&location_id)
 }
 
 fn location_kind(location: &LocationView, player_id: PlayerId) -> LocationActionKind {
@@ -1978,6 +1990,33 @@ mod tests {
         let strike = action_by_id(&actions, ActionId::Strike).expect("strike");
         assert!(assault.summary().contains("survey"));
         assert!(strike.summary().contains("survey"));
+    }
+
+    #[test]
+    fn stale_surveyed_enemy_world_enables_assault_and_strike() {
+        let mut frame = make_enemy_frame();
+        frame.view.visibility = VisibilityState {
+            surveyed_location_ids: vec![2],
+            observed_location_ids: Vec::new(),
+            stale_location_ids: vec![2],
+            contested_location_ids: Vec::new(),
+        };
+        frame.view.locations[1].visibility = LocationVisibility::Surveyed;
+        frame.view.locations[1].territory = TerritoryState::Obscured;
+        frame.view.locations[1].controller = None;
+        frame.view.locations[1].contesting_players = None;
+        frame.view.locations[1].pacification_ticks_remaining = None;
+        frame.view.locations[1].relay_status = None;
+        frame.view.locations[1].infrastructure = None;
+        frame.view.locations[1].infrastructure_projects = None;
+        frame.view.locations[1].economy = None;
+        frame.view.locations[1].stockpiles = None;
+
+        let actions = derive_actions(&frame, 1);
+        let assault = action_by_id(&actions, ActionId::Assault).expect("assault");
+        let strike = action_by_id(&actions, ActionId::Strike).expect("strike");
+        assert!(assault.availability.is_enabled());
+        assert!(strike.availability.is_enabled());
     }
 
     #[test]
