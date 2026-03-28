@@ -1436,7 +1436,7 @@ fn repair_choices(
                 )
             } else {
                 (
-                    "No damaged instance available.".to_owned(),
+                    "No damaged infrastructure available.".to_owned(),
                     disabled(
                         "repair can only be queued for degraded or offline infrastructure that is not already under repair",
                     ),
@@ -1872,17 +1872,23 @@ fn location_by_id(frame: &PlayerFrameResponse, location_id: u32) -> Option<&Loca
 }
 
 fn damage_summary(degraded_levels: u8, offline_levels: u8) -> String {
-    let mut parts = Vec::new();
-    if degraded_levels > 0 {
-        parts.push(format!("{degraded_levels} degraded"));
-    }
-    if offline_levels > 0 {
-        parts.push(format!("{offline_levels} offline"));
-    }
-    if parts.is_empty() {
-        "healthy".to_owned()
+    if offline_levels > 0 && degraded_levels == 0 {
+        "offline".to_owned()
+    } else if degraded_levels > 0 && offline_levels == 0 {
+        "degraded".to_owned()
     } else {
-        parts.join(", ")
+        let mut parts = Vec::new();
+        if degraded_levels > 0 {
+            parts.push(format!("{degraded_levels} degraded"));
+        }
+        if offline_levels > 0 {
+            parts.push(format!("{offline_levels} offline"));
+        }
+        if parts.is_empty() {
+            "healthy".to_owned()
+        } else {
+            parts.join(", ")
+        }
     }
 }
 

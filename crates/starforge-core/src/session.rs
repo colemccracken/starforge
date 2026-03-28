@@ -58,11 +58,14 @@ impl GameSession {
     }
 
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
+        let mut state = snapshot.state;
+        state.normalize_infrastructure_families();
+
         Self {
             session_id: snapshot.session_id,
             config: snapshot.config,
             scenario: snapshot.scenario,
-            state: snapshot.state,
+            state,
             event_log: snapshot.event_log,
             replay_log: snapshot.replay_log,
             pending_commands: snapshot.pending_commands,
@@ -3153,9 +3156,7 @@ fn ensure_colony_infrastructure(location: &mut LocationState) {
         }
     }
 
-    location
-        .infrastructure
-        .sort_by_key(|infrastructure| infrastructure.kind.clone());
+    crate::state::normalize_location_infrastructure(location);
 }
 
 fn takeover_duration_ticks(

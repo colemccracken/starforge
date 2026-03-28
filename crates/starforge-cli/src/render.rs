@@ -590,11 +590,17 @@ pub(crate) fn render_event(event: &EventKind) -> String {
 
 fn render_infrastructure_family(family: &starforge_core::InfrastructureFamilyView) -> String {
     let mut states = Vec::new();
-    if family.degraded_levels > 0 {
-        states.push(format!("{} degraded", family.degraded_levels));
-    }
-    if family.offline_levels > 0 {
-        states.push(format!("{} offline", family.offline_levels));
+    if family.offline_levels > 0 && family.degraded_levels == 0 {
+        states.push("offline".to_owned());
+    } else if family.degraded_levels > 0 && family.offline_levels == 0 {
+        states.push("degraded".to_owned());
+    } else {
+        if family.degraded_levels > 0 {
+            states.push(format!("{} degraded", family.degraded_levels));
+        }
+        if family.offline_levels > 0 {
+            states.push(format!("{} offline", family.offline_levels));
+        }
     }
 
     if states.is_empty() {

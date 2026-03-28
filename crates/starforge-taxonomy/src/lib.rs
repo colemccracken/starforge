@@ -947,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn construction_behavior_is_covered_and_adds_new_infrastructure() {
+    fn construction_behavior_is_covered_and_increases_infrastructure_level() {
         assert_behavior_id("behavior.infrastructure.development_project_completion");
 
         let mut session = GameSession::new(
@@ -966,12 +966,12 @@ mod tests {
             .expect("construction should queue");
         session.advance_ticks(3);
 
-        let datacenter_count = session.state().locations[0]
+        let datacenter = session.state().locations[0]
             .infrastructure
             .iter()
-            .filter(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
-            .count();
-        assert_eq!(datacenter_count, 2);
+            .find(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
+            .expect("datacenter should be present");
+        assert_eq!(datacenter.tier, 2);
     }
 
     #[test]

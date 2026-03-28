@@ -1674,12 +1674,12 @@ mod tests {
 
         session.advance_tick();
 
-        let datacenter_count = session.state().locations[0]
+        let datacenter = session.state().locations[0]
             .infrastructure
             .iter()
-            .filter(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
-            .count();
-        assert_eq!(datacenter_count, 2);
+            .find(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
+            .expect("datacenter should still be present");
+        assert_eq!(datacenter.tier, 2);
         assert_eq!(session.state().players[0].throughput.available, 60);
         assert!(session.event_log().iter().any(|event| matches!(
             &event.kind,
@@ -1698,6 +1698,14 @@ mod tests {
             GameConfig::default(),
             duplicated_damaged_datacenter_scenario(),
         );
+
+        let datacenter = session.state().locations[0]
+            .infrastructure
+            .iter()
+            .find(|infrastructure| infrastructure.kind == InfrastructureKind::Datacenter)
+            .expect("datacenter should be present");
+        assert_eq!(datacenter.tier, 2);
+        assert_eq!(datacenter.condition, InfrastructureCondition::Degraded);
 
         session
             .accept_command(CommandEnvelope {

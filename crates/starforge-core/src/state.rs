@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoStaticStr};
 
@@ -113,6 +115,14 @@ impl GameState {
         self.recompute_economy();
     }
 
+    pub(crate) fn normalize_infrastructure_families(&mut self) {
+        for location in &mut self.locations {
+            normalize_location_infrastructure(location);
+        }
+
+        self.recompute_economy();
+    }
+
     pub(crate) fn next_transit_id(&self) -> u32 {
         self.transits
             .iter()
@@ -182,12 +192,23 @@ impl GameState {
                         InfrastructureProjectKind::Development {
                             infrastructure_kind,
                         } => {
-                            location.infrastructure.push(InfrastructureState {
-                                kind: infrastructure_kind.clone(),
-                                tier: 1,
-                                condition: InfrastructureCondition::Operational,
-                                wear: 0,
-                            });
+                            if let Some(infrastructure) = location
+                                .infrastructure
+                                .iter_mut()
+                                .find(|infrastructure| infrastructure.kind == infrastructure_kind)
+                            {
+                                infrastructure.tier = infrastructure
+                                    .tier
+                                    .saturating_add(1)
+                                    .min(MAX_INFRASTRUCTURE_LEVEL);
+                            } else {
+                                location.infrastructure.push(InfrastructureState {
+                                    kind: infrastructure_kind.clone(),
+                                    tier: 1,
+                                    condition: InfrastructureCondition::Operational,
+                                    wear: 0,
+                                });
+                            }
                             completions.push(InfrastructureProjectCompletion {
                                 location_id: location.location_id,
                                 kind: infrastructure_kind.clone(),
@@ -309,11 +330,13 @@ pub struct LocationState {
 impl From<StartingLocation> for LocationState {
     fn from(location: StartingLocation) -> Self {
         let stockpiles = initial_stockpiles(&location);
-        let infrastructure = location
-            .starting_infrastructure
-            .into_iter()
-            .map(InfrastructureState::from)
-            .collect();
+        let infrastructure = normalize_infrastructure_family_states(
+            location
+                .starting_infrastructure
+                .into_iter()
+                .map(InfrastructureState::from)
+                .collect(),
+        );
 
         Self {
             location_id: location.location_id,
@@ -340,6 +363,57 @@ impl From<StartingLocation> for LocationState {
             pacification_ticks_remaining: 0,
         }
     }
+}
+
+pub(crate) fn normalize_location_infrastructure(location: &mut LocationState) {
+    location.infrastructure =
+        normalize_infrastructure_family_states(std::mem::take(&mut location.infrastructure));
+
+    for project in &mut location.infrastructure_projects {
+        if let InfrastructureProjectKind::Repair {
+            infrastructure_kind,
+            target_index,
+        } = &mut project.kind
+            && let Some(index) = location
+                .infrastructure
+                .iter()
+                .position(|infrastructure| infrastructure.kind == *infrastructure_kind)
+        {
+            *target_index = index;
+        }
+    }
+}
+
+fn normalize_infrastructure_family_states(
+    infrastructure: Vec<InfrastructureState>,
+) -> Vec<InfrastructureState> {
+    let mut merged = BTreeMap::<InfrastructureKind, InfrastructureState>::new();
+
+    for segment in infrastructure {
+        let kind = segment.kind.clone();
+        let entry = merged.entry(kind.clone()).or_insert(InfrastructureState {
+            kind,
+            tier: 0,
+            condition: InfrastructureCondition::Operational,
+            wear: 0,
+        });
+
+        entry.tier = entry
+            .tier
+            .saturating_add(segment.tier)
+            .min(MAX_INFRASTRUCTURE_LEVEL);
+        entry.wear = entry.wear.max(segment.wear);
+        entry.condition = condition_for_wear(entry.wear);
+    }
+
+    let mut normalized = Vec::with_capacity(merged.len());
+    for kind in infrastructure_family_kinds() {
+        if let Some(segment) = merged.remove(kind) {
+            normalized.push(segment);
+        }
+    }
+    normalized.extend(merged.into_values());
+    normalized
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -706,8 +780,10 @@ pub fn infrastructure_family_level(
     infrastructure
         .iter()
         .filter(|infrastructure| infrastructure.kind == kind)
-        .count()
-        .min(usize::from(MAX_INFRASTRUCTURE_LEVEL)) as u8
+        .fold(0_u8, |level, infrastructure| {
+            level.saturating_add(infrastructure.tier)
+        })
+        .min(MAX_INFRASTRUCTURE_LEVEL)
 }
 
 pub fn infrastructure_family_view(
@@ -721,13 +797,13 @@ pub fn infrastructure_family_view(
     for segment in infrastructure.iter().filter(|segment| segment.kind == kind) {
         match segment.condition {
             InfrastructureCondition::Operational => {
-                operational_levels = operational_levels.saturating_add(1);
+                operational_levels = operational_levels.saturating_add(segment.tier);
             }
             InfrastructureCondition::Degraded => {
-                degraded_levels = degraded_levels.saturating_add(1);
+                degraded_levels = degraded_levels.saturating_add(segment.tier);
             }
             InfrastructureCondition::Offline => {
-                offline_levels = offline_levels.saturating_add(1);
+                offline_levels = offline_levels.saturating_add(segment.tier);
             }
         }
     }
